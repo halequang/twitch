@@ -1,0 +1,29 @@
+{
+  "title": "cập nhật giá ngày 11/11/2025",
+  "source_url": "https://www.notion.so/1de7c5e794868002bd3be7255f5a8528",
+  "collection_id": "1de7c5e7-9486-807d-8dcf-000b8f1604ab",
+  "parent_page": "Bảng giá top-up game POE",
+  "schema": {
+    "Title": {
+      "type": "title"
+    },
+    "Giá (nghìn đồng)": {
+      "type": "number",
+      "description": "Price in thousand VND"
+    },
+    "type": {
+      "type": "multi_select",
+      "options": [
+        { "name": "steam", "color": "green" },
+        { "name": "có sẵn", "color": "yellow" },
+        { "name": "nạp chính chủ", "color": "blue" },
+        { "name": "web", "color": "pink" },
+        { "name": "xbox", "color": "gray" }
+      ]
+    },
+    "note": {
+      "type": "text"
+    }
+  },
+  "note": "Row data not exported — Notion MCP fetch returns schema only."
+}

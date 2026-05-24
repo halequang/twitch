@@ -1,0 +1,25 @@
+{
+  "title": "Bill & Feedback database",
+  "source_url": "https://www.notion.so/23d7c5e794868136a5f8d39515f605d1",
+  "collection_id": "23d7c5e7-9486-81a9-bf07-000b692cd4ab",
+  "parent_page": "Bill & Feedback",
+  "schema": {
+    "Name": {
+      "type": "title"
+    },
+    "Date": {
+      "type": "date"
+    },
+    "Created": {
+      "type": "created_time"
+    },
+    "Type": {
+      "type": "select",
+      "options": [
+        { "name": "Top-up", "color": "brown" },
+        { "name": "keypoe2", "color": "purple" }
+      ]
+    }
+  },
+  "note": "Row data not exported — Notion MCP fetch returns schema only."
+}

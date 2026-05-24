@@ -6,7 +6,7 @@
  */
 
 const ROUTES = {
-  "/":          "/skins.html",
+  "/":          "/index.html",
   "/skins":     "/skins.html",
   "/skins2":    "/skins2.html",
   "/skins3":    "/skins.html",     // no skins3 file exists; fall back to full pack
