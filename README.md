@@ -1,57 +1,75 @@
-# POE Skins — Cloudflare Worker
+# POE Skins — Astro + Cloudflare Worker
 
-A simple Worker that serves the four POE Twitch Drops pages with clean URLs.
+Landing page built with [Astro](https://astro.build) and deployed as a Cloudflare Worker.
+Skin pages are bundled as static assets.
 
 ## Routes
 
-| Path         | Page              |
-| ------------ | ----------------- |
-| `/`          | Full pack         |
-| `/skins`     | Full pack         |
-| `/skins2`    | Medium pack       |
-| `/skinsOLD`  | Old pack          |
-| `/POE2`      | POE 2 pack        |
+| Path         | Source                                | Description       |
+| ------------ | ------------------------------------- | ----------------- |
+| `/`          | `src/pages/index.astro`               | Landing page      |
+| `/skins`     | `public/skins.html`                   | Full pack         |
+| `/skins2`    | `public/skins2.html`                  | Medium pack       |
+| `/skinsOLD`  | `public/skinsOLD.html`                | Legacy pack       |
+| `/POE2`      | `public/POE2.html`                    | POE 2 pack        |
 
-All image / CSS / JS assets are hot-linked from `saydis.pro`.
+Image / CSS / JS for the skin pages are hot-linked from `saydis.pro`.
+
+## Editing content
+
+Most edits happen in two places:
+
+- **Landing page guides** — `src/content/guides/*.md` (markdown with frontmatter).
+  Add a new file with `title`, `icon`, `subtitle`, and `order` fields to add a new
+  collapsible section. Lower `order` appears first.
+- **Styles** — `src/styles/global.css`. All design tokens are CSS variables at the top.
+
+Other key files:
+
+- `src/pages/index.astro` — landing page composition (collection cards + guides loop)
+- `src/components/*.astro` — `Header`, `Footer`, `SectionTitle`, `CollectionCard`, `Guide`
+- `src/layouts/Layout.astro` — outer HTML shell
+
+## Develop
+
+```bash
+npm install            # one-time
+npm run dev            # Astro dev server with hot reload — http://localhost:4321
+npm run build          # Build to ./dist
+npm run wrangler:dev   # Run Cloudflare Worker against built ./dist (port 8788)
+```
 
 ## Deploy
 
-Requires Node.js 18+ and the Cloudflare CLI (`wrangler`).
-
 ```bash
-# 1. Install wrangler if you don't have it
-npm install -g wrangler
-
-# 2. Log in to your Cloudflare account
-wrangler login
-
-# 3. Test locally (http://localhost:8787)
-wrangler dev
-
-# 4. Publish to Cloudflare
-wrangler deploy
+npm run deploy         # astro build && wrangler deploy
 ```
 
-After `wrangler deploy`, your Worker will be live at
-`https://poe-skins.<your-subdomain>.workers.dev`.
+After deploy, the Worker is live at the routes configured in `wrangler.toml`
+(`fungamingvn.shop/*` and `www.fungamingvn.shop/*`).
 
 ## Structure
 
 ```
 .
-├── assets/             # Static HTML files served by the Worker
-│   ├── skins.html
-│   ├── skins2.html
-│   ├── skinsOLD.html
-│   └── POE2.html
+├── public/                 # Static files copied verbatim to dist/
+│   ├── FuNGAMING logo.png
+│   └── skins*.html, POE2.html
 ├── src/
-│   └── index.js        # Worker entrypoint
-├── wrangler.toml       # Cloudflare config
-└── README.md
+│   ├── components/         # Reusable Astro components
+│   ├── content/guides/     # Markdown for collapsible Notion sections
+│   ├── layouts/Layout.astro
+│   ├── pages/index.astro   # Landing page
+│   └── styles/global.css
+├── worker/index.js         # Cloudflare Worker entrypoint (clean-URL routing)
+├── notion-content/         # Notion mirror archive (read-only reference)
+├── astro.config.mjs
+├── wrangler.toml
+└── package.json
 ```
 
-## Customising
+## Customising the worker
 
-To change the project name shown in your Cloudflare dashboard, edit the
-`name` field in `wrangler.toml` before running `wrangler deploy`.
-# twitch
+The worker (`worker/index.js`) maps clean URLs (`/skins` → `/skins.html`) to files in
+the built `dist/` directory. To change the Worker name in Cloudflare, edit the
+`name` field in `wrangler.toml` before running `npm run deploy`.

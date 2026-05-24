@@ -1,0 +1,12 @@
+---
+interface Props {
+  brand?: string;
+}
+
+const { brand = 'FunGaming VN' } = Astro.props;
+---
+
+<footer>
+  <p class="gold">⚜ {brand} ⚜</p>
+  <p>Fan-made · Không liên kết với Grinding Gear Games · Not affiliated with Grinding Gear Games</p>
+</footer>

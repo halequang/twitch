@@ -1,0 +1,81 @@
+---
+interface Props {
+  src: string;
+  title?: string;
+  ratio?: string;
+  viewUrl?: string;
+}
+
+const {
+  src,
+  title = 'Canva design',
+  // ratio = '141.4286%',
+  ratio = '50%',
+  viewUrl,
+} = Astro.props;
+
+const embedSrc = src.includes('?embed') ? src : `${src}?embed`;
+---
+
+<div class="canva-embed">
+  <div class="canva-frame" style={`padding-top:${ratio}`}>
+    <iframe
+      loading="lazy"
+      src={embedSrc}
+      title={title}
+      allow="fullscreen"
+      allowfullscreen
+    ></iframe>
+  </div>
+  {viewUrl && (
+    <a class="canva-link" href={viewUrl} target="_blank" rel="noopener">
+      Mở trên Canva ↗
+    </a>
+  )}
+</div>
+
+<style>
+  .canva-embed {
+    width: 100%;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  .canva-frame {
+    position: relative;
+    width: 100%;
+    height: 0;
+    padding-top: 56.25%;
+    box-shadow: 0 2px 8px rgba(63, 69, 81, 0.16);
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    background: var(--bg-1);
+  }
+
+  .canva-frame iframe {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+  }
+
+  .canva-link {
+    display: inline-block;
+    margin-top: 14px;
+    color: var(--gold);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-weight: 600;
+    text-decoration: none;
+    border-bottom: 1px dotted var(--gold-dim);
+    padding-bottom: 2px;
+  }
+
+  .canva-link:hover {
+    color: var(--gold-bright);
+    border-bottom-color: var(--gold);
+  }
+</style>

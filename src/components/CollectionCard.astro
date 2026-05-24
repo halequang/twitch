@@ -1,0 +1,30 @@
+---
+interface Props {
+  href: string;
+  icon: string;
+  title: string;
+  subtitle: string;
+  description: string;
+  badge?: string;
+  cta?: string;
+}
+
+const {
+  href,
+  icon,
+  title,
+  subtitle,
+  description,
+  badge,
+  cta = 'Xem ngay',
+} = Astro.props;
+---
+
+<a class="card" href={href}>
+  {badge && <span class="badge">{badge}</span>}
+  <div class="card-icon">{icon}</div>
+  <div class="card-title">{title}</div>
+  <div class="card-subtitle">{subtitle}</div>
+  <p class="card-desc">{description}</p>
+  <span class="card-cta">{cta} <span class="arrow">→</span></span>
+</a>

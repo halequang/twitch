@@ -1,0 +1,57 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description?: string;
+  lang?: string;
+}
+
+const {
+  title,
+  description = 'Tổng hợp skin Twitch Drops cho Path of Exile và Path of Exile 2.',
+  lang = 'vi',
+} = Astro.props;
+---
+
+<!DOCTYPE html>
+<html lang={lang}>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="alternate icon" href="/FuNGAMING%20logo.png" />
+    <link rel="apple-touch-icon" href="/FuNGAMING%20logo.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div class="wrap">
+      <slot />
+    </div>
+
+    <button id="toTop" type="button" aria-label="Back to top" title="Back to top"></button>
+
+    <script is:inline>
+      (function () {
+        const btn = document.getElementById('toTop');
+        if (!btn) return;
+        const threshold = 400;
+        const toggle = () => {
+          btn.style.display = window.scrollY > threshold ? 'flex' : 'none';
+        };
+        btn.addEventListener('click', () => {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+        window.addEventListener('scroll', toggle, { passive: true });
+        toggle();
+      })();
+    </script>
+  </body>
+</html>

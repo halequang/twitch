@@ -1,0 +1,347 @@
+---
+interface PointPack {
+  size: string;
+  price: string;
+  badge?: string;
+  featured?: boolean;
+}
+
+interface AccountPack {
+  label: string;
+  price: string;
+}
+
+const pointPacks: PointPack[] = [
+  { size: '300P', price: '390k', badge: '+ KEY POE2', featured: true },
+  { size: '600P', price: '790k', badge: '+ KEY POE2', featured: true },
+  { size: '900P', price: '1.050k' },
+  { size: '1000P', price: '1.250k', badge: '+ KEY POE2', featured: true },
+];
+
+const accountPacks: AccountPack[] = [
+  { label: '1 THÁNG', price: '7k' },
+  { label: '3 THÁNG', price: '18k' },
+  { label: '6 THÁNG', price: '30k' },
+];
+---
+
+<div class="pricing-banner">
+  <div class="banner-hero">
+    <div class="hero-stripes"></div>
+    <div class="hero-title">
+      <div class="hero-line-1">RETURN</div>
+      <div class="hero-line-2">— OF THE —</div>
+      <div class="hero-line-3">ANCIENTS</div>
+    </div>
+  </div>
+
+  <div class="banner-body">
+
+    <div class="banner-section">
+      <div class="banner-section-title">
+        <div class="rule"></div>
+        <span>⚜ BẢNG GIÁ NẠP POINT ⚜</span>
+        <div class="rule"></div>
+      </div>
+      <div class="banner-subtitle">Nạp càng nhiều — giá càng tốt</div>
+
+      <div class="point-grid">
+        {pointPacks.map((pack) => (
+          <div class={`point-card${pack.featured ? ' point-card-featured' : ''}`}>
+            {pack.badge && <span class="point-badge">{pack.badge}</span>}
+            <div class="point-label">GÓI BẤT KỲ</div>
+            <div class={`point-size${pack.featured ? ' point-size-featured' : ''}`}>{pack.size}</div>
+            <div class={`point-divider${pack.featured ? ' point-divider-featured' : ''}`}></div>
+            <div class={`point-price${pack.featured ? ' point-price-featured' : ''}`}>{pack.price}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+
+    <div class="banner-section">
+      <div class="banner-section-title">
+        <div class="rule"></div>
+        <span>⚔ BẢNG GIÁ ACC ⚔</span>
+        <div class="rule"></div>
+      </div>
+
+      <div class="account-grid">
+        {accountPacks.map((pack) => (
+          <div class="account-card">
+            <div class="account-label">ACC TẠO</div>
+            <div class="account-duration">{pack.label}</div>
+            <div class="account-divider"></div>
+            <div class="account-price">{pack.price}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+
+    <a
+      class="banner-cta"
+      href="https://t.me/fungamingvnbot"
+      target="_blank"
+      rel="noopener"
+    >
+      <svg class="banner-cta-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          d="M9.999 15.2 9.84 19.42c.34 0 .49-.146.67-.32l1.6-1.53 3.32 2.43c.61.34 1.05.16 1.21-.56l2.2-10.3c.21-.94-.34-1.31-.94-1.09L4.4 13.34c-.91.35-.9.86-.16 1.09l3.83 1.2 8.89-5.6c.42-.27.8-.12.49.16"
+          fill="currentColor"
+        />
+      </svg>
+      <span class="banner-cta-text">
+        <span class="banner-cta-line-1">Mua ngay qua bot tự động</span>
+        <span class="banner-cta-line-2">@fungamingvnbot · 24/7</span>
+      </span>
+      <span class="banner-cta-arrow">↗</span>
+    </a>
+
+    <div class="banner-footer">
+      <div class="banner-ornaments">
+        <span>◆</span><span>◆</span><span class="ornament-center">◆</span><span>◆</span><span>◆</span>
+      </div>
+      <div class="banner-tag">FUNGAMING — TRUSTED SHOP</div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .pricing-banner {
+    width: 100%;
+    max-width: 900px;
+    margin: 0 auto;
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #3a2810;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  .banner-hero {
+    position: relative;
+    height: 220px;
+    background: radial-gradient(ellipse at center, #4a2810 0%, #1a0a05 50%, #000 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 2px solid #6b4520;
+  }
+
+  .hero-stripes {
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(90deg, transparent 0, transparent 20px, rgba(180, 120, 40, 0.04) 20px, rgba(180, 120, 40, 0.04) 21px);
+  }
+
+  .hero-title {
+    text-align: center;
+    position: relative;
+    z-index: 2;
+    font-family: Georgia, serif;
+  }
+
+  .hero-line-1, .hero-line-3 {
+    font-size: clamp(32px, 7vw, 54px);
+    font-weight: 500;
+    letter-spacing: 6px;
+    color: #d4a04a;
+    text-shadow: 0 0 20px rgba(212, 160, 74, 0.5), 2px 2px 0 #6b3e15;
+    line-height: 1;
+  }
+
+  .hero-line-2 {
+    font-size: clamp(13px, 2.2vw, 18px);
+    color: #a8763a;
+    letter-spacing: 8px;
+    margin: 6px 0;
+  }
+
+  .banner-body {
+    padding: 28px 24px;
+    background: linear-gradient(180deg, #0a0503 0%, #15090a 100%);
+  }
+
+  .banner-section { margin-bottom: 28px; }
+  .banner-section:last-of-type { margin-bottom: 0; }
+
+  .banner-section-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+    font-family: Georgia, serif;
+    font-size: clamp(14px, 2.2vw, 20px);
+    color: #e8b659;
+    letter-spacing: 2px;
+    text-shadow: 0 0 10px rgba(232, 182, 89, 0.3);
+  }
+
+  .banner-section-title span { white-space: nowrap; }
+  .banner-section-title .rule { flex: 1; height: 1px; background: linear-gradient(90deg, transparent, #6b4520); }
+  .banner-section-title .rule:last-child { background: linear-gradient(90deg, #6b4520, transparent); }
+
+  .banner-subtitle {
+    text-align: center;
+    color: #a8763a;
+    font-size: 13px;
+    font-style: italic;
+    margin-bottom: 22px;
+    letter-spacing: 1px;
+  }
+
+  .point-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .point-card {
+    background: linear-gradient(135deg, #2a1810 0%, #1a0e08 100%);
+    border: 1px solid #6b4520;
+    border-radius: 6px;
+    padding: 16px 8px;
+    text-align: center;
+    position: relative;
+  }
+
+  .point-card-featured {
+    background: linear-gradient(135deg, #3a2010 0%, #251208 100%);
+    border: 2px solid #d4a04a;
+  }
+
+  .point-badge {
+    position: absolute;
+    top: -9px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #d4a04a;
+    color: #1a0a05;
+    font-size: 9px;
+    padding: 3px 8px;
+    border-radius: 8px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    white-space: nowrap;
+  }
+
+  .point-label { font-size: 10px; color: #a8763a; letter-spacing: 1px; margin-bottom: 4px; }
+  .point-size { font-family: Georgia, serif; font-size: 24px; color: #e8b659; font-weight: 500; }
+  .point-size-featured { color: #f5d488; }
+  .point-divider { height: 1px; background: #6b4520; margin: 10px 0; }
+  .point-divider-featured { background: #d4a04a; }
+  .point-price { font-size: 20px; color: #f5d488; font-weight: 500; }
+  .point-price-featured { color: #ffe09f; }
+
+  .account-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .account-card {
+    background: linear-gradient(135deg, #2a1810 0%, #1a0e08 100%);
+    border: 1px solid #6b4520;
+    border-radius: 6px;
+    padding: 14px 12px;
+    text-align: center;
+  }
+
+  .account-label { font-size: 11px; color: #a8763a; letter-spacing: 1px; margin-bottom: 4px; }
+  .account-duration { font-family: Georgia, serif; font-size: 20px; color: #e8b659; font-weight: 500; }
+  .account-divider { height: 1px; background: #6b4520; margin: 8px 0; }
+  .account-price { font-size: 18px; color: #f5d488; font-weight: 500; }
+
+  .banner-cta {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin: 28px auto 0;
+    padding: 14px 22px;
+    width: fit-content;
+    max-width: 100%;
+    text-decoration: none;
+    color: #1a0a05;
+    background: linear-gradient(135deg, #f5d488 0%, #d4a04a 50%, #b3812e 100%);
+    border: 1px solid #6b3e15;
+    border-radius: 999px;
+    font-family: Georgia, serif;
+    box-shadow: 0 6px 20px rgba(212, 160, 74, 0.25), inset 0 1px 0 rgba(255, 224, 159, 0.6);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .banner-cta:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 28px rgba(212, 160, 74, 0.4), inset 0 1px 0 rgba(255, 224, 159, 0.8);
+  }
+
+  .banner-cta:active { transform: translateY(0); }
+
+  .banner-cta-icon {
+    width: 28px;
+    height: 28px;
+    color: #1a0a05;
+    flex-shrink: 0;
+  }
+
+  .banner-cta-text {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.15;
+    text-align: left;
+  }
+
+  .banner-cta-line-1 {
+    font-size: clamp(14px, 2.4vw, 17px);
+    font-weight: 700;
+    letter-spacing: 1px;
+  }
+
+  .banner-cta-line-2 {
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: #4a2810;
+    margin-top: 2px;
+    text-transform: uppercase;
+    font-family: 'Courier New', monospace;
+  }
+
+  .banner-cta-arrow {
+    font-size: 18px;
+    font-weight: 700;
+    color: #1a0a05;
+  }
+
+  .banner-footer {
+    margin-top: 22px;
+    text-align: center;
+  }
+
+  .banner-ornaments {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    color: #6b4520;
+    font-size: 14px;
+    letter-spacing: 3px;
+  }
+
+  .ornament-center { color: #d4a04a; }
+
+  .banner-tag {
+    margin-top: 10px;
+    color: #a8763a;
+    font-size: 11px;
+    letter-spacing: 2px;
+  }
+
+  @media (max-width: 720px) {
+    .point-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .account-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .banner-hero { height: 180px; }
+  }
+
+  @media (max-width: 460px) {
+    .account-grid { grid-template-columns: 1fr; }
+    .banner-body { padding: 20px 14px; }
+  }
+</style>

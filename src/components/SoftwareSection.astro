@@ -1,0 +1,150 @@
+---
+interface Software {
+  icon: string;
+  name: string;
+  duration: string;
+  notes: string[];
+  warning?: string;
+  link?: { label: string; url: string };
+}
+
+const software: Software[] = [
+  {
+    icon: '🎬',
+    name: 'CapCut Pro',
+    duration: '1 năm',
+    notes: [
+      'Tài khoản cấp sẵn dùng chung tối đa cho 4 khách.',
+      'Vui lòng sử dụng cố định 1 thiết bị.',
+      'Bảo hành 1 đổi 1 trong thời gian sử dụng.',
+    ],
+    warning: 'Không bảo hành nếu phát hiện dùng nhiều thiết bị.',
+    link: {
+      label: 'Đăng nhập bằng TikTok',
+      url: 'https://youtube.com/shorts/Hq7IyZRSzXU?si=TeHV-8Qzsk1ApLYb',
+    },
+  },
+];
+---
+
+<div class="software-grid">
+  {software.map((item) => (
+    <div class="software-card">
+      <div class="software-header">
+        <span class="software-icon">{item.icon}</span>
+        <div>
+          <div class="software-name">{item.name}</div>
+          <div class="software-duration">{item.duration}</div>
+        </div>
+      </div>
+      <ul class="software-notes">
+        {item.notes.map((n) => <li>{n}</li>)}
+      </ul>
+      {item.warning && (
+        <div class="software-warning">
+          <strong>Lưu ý:</strong> {item.warning}
+        </div>
+      )}
+      {item.link && (
+        <a class="software-link" href={item.link.url} target="_blank" rel="noopener">
+          {item.link.label} ↗
+        </a>
+      )}
+    </div>
+  ))}
+</div>
+
+<style>
+  .software-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 20px;
+  }
+
+  .software-card {
+    background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 100%);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 24px;
+    position: relative;
+  }
+
+  .software-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(to right, transparent, var(--gold-dim), transparent);
+    opacity: 0.5;
+  }
+
+  .software-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+
+  .software-icon {
+    font-size: 28px;
+    color: var(--gold);
+  }
+
+  .software-name {
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    font-size: 18px;
+    letter-spacing: 0.06em;
+    color: var(--gold-bright);
+  }
+
+  .software-duration {
+    font-size: 12px;
+    color: var(--text-dim);
+    font-style: italic;
+    margin-top: 2px;
+  }
+
+  .software-notes {
+    list-style: disc;
+    padding-left: 22px;
+    color: var(--text-dim);
+    font-size: 14px;
+    line-height: 1.7;
+    margin: 12px 0;
+  }
+
+  .software-notes li::marker { color: var(--gold-dim); }
+
+  .software-warning {
+    border-left: 2px solid var(--gold-dim);
+    padding: 6px 14px;
+    margin: 12px 0;
+    color: var(--text-dim);
+    background: rgba(200, 164, 74, 0.03);
+    font-style: italic;
+    font-size: 13px;
+  }
+
+  .software-warning strong { color: var(--text); }
+
+  .software-link {
+    display: inline-block;
+    margin-top: 8px;
+    color: var(--gold);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-weight: 600;
+    text-decoration: none;
+    border-bottom: 1px dotted var(--gold-dim);
+    padding-bottom: 2px;
+  }
+
+  .software-link:hover {
+    color: var(--gold-bright);
+    border-bottom-color: var(--gold);
+  }
+</style>

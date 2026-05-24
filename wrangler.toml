@@ -1,9 +1,9 @@
 name = "poe-skins"
-main = "src/index.js"
+main = "worker/index.js"
 compatibility_date = "2025-05-01"
 
 [assets]
-directory = "./assets"
+directory = "./dist"
 binding = "ASSETS"
 
 [[routes]]

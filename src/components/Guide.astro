@@ -1,0 +1,24 @@
+---
+interface Props {
+  icon: string;
+  title: string;
+  subtitle?: string;
+  open?: boolean;
+}
+
+const { icon, title, subtitle, open = false } = Astro.props;
+---
+
+<details class="guide" open={open}>
+  <summary>
+    <span class="guide-icon">{icon}</span>
+    <span class="guide-titles">
+      <span class="guide-title">{title}</span>
+      {subtitle && <span class="guide-sub">{subtitle}</span>}
+    </span>
+    <span class="guide-chev">›</span>
+  </summary>
+  <div class="guide-body">
+    <slot />
+  </div>
+</details>

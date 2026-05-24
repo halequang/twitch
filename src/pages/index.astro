@@ -1,0 +1,144 @@
+---
+import { getCollection } from 'astro:content';
+import Layout from '../layouts/Layout.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import SectionTitle from '../components/SectionTitle.astro';
+import SectionNav from '../components/SectionNav.astro';
+import CollectionCard from '../components/CollectionCard.astro';
+import Guide from '../components/Guide.astro';
+import PricingBanner from '../components/PricingBanner.astro';
+import CanvaEmbed from '../components/CanvaEmbed.astro';
+import SoftwareSection from '../components/SoftwareSection.astro';
+import WarrantySection from '../components/WarrantySection.astro';
+
+const collections = [
+  {
+    href: '/skins',
+    icon: '⚔',
+    title: 'Full Pack',
+    subtitle: 'Bộ đầy đủ',
+    description:
+      'Bộ sưu tập đầy đủ toàn bộ skin Twitch Drops của Path of Exile. The complete collection of POE Twitch Drops skins.',
+    badge: 'Featured',
+  },
+  {
+    href: '/skins2',
+    icon: '🗡',
+    title: 'Medium Pack',
+    subtitle: 'Bộ trung bình',
+    description:
+      'Tuyển tập rút gọn các skin nổi bật nhất. Curated selection of the most notable skins.',
+  },
+  {
+    href: '/POE2',
+    icon: '✦',
+    title: 'POE 2 Pack',
+    subtitle: 'Phiên bản POE 2',
+    description:
+      'Bộ skin Twitch Drops dành riêng cho Path of Exile 2. Skin pack dedicated to Path of Exile 2.',
+    badge: 'New',
+  },
+  {
+    href: '/skinsOLD',
+    icon: '⚱',
+    title: 'Legacy Pack',
+    subtitle: 'Bộ cổ điển',
+    description:
+      'Lưu trữ các skin từ những mùa giải trước. Archive of skins from past league cycles.',
+  },
+];
+
+const guides = (await getCollection('guides')).sort(
+  (a, b) => a.data.order - b.data.order
+);
+
+const canvaUrl = 'https://www.canva.com/design/DAG0smoSLKc/mJTJjk8UFfV_yvpRTiO_fw/view';
+
+const navItems = [
+  { href: '#pricing',  num: '①', label: 'Bảng Giá' },
+  { href: '#accounts', num: '②', label: 'Account POE' },
+  { href: '#twitch',   num: '③', label: 'Twitch Drop' },
+  { href: '#software', num: '④', label: 'Phần Mềm' },
+  { href: '#guides',   num: '⑤', label: 'Hướng Dẫn' },
+  { href: '#warranty', num: '⑥', label: 'Bảo Hành' },
+];
+---
+
+<Layout title="FunGaming VN — POE Top-up, Accounts, Twitch Drops">
+
+  <Header />
+
+  <SectionNav items={navItems} />
+
+  <SectionTitle
+    id="pricing"
+    title="① Bảng Giá / Pricing"
+    subtitle="Return of the Ancients · Nạp Point &amp; Acc tạo sẵn"
+  />
+  <PricingBanner />
+
+  <SectionTitle
+    id="accounts"
+    title="② Account POE 1 &amp; 2"
+    subtitle="Account marketplace · Xem giá &amp; tình trạng tài khoản"
+    spaced
+  />
+  <CanvaEmbed
+    src={canvaUrl}
+    title="FunGaming · account POE 1 & 2"
+    viewUrl={canvaUrl}
+  />
+
+  <SectionTitle
+    id="twitch"
+    title="③ Twitch Drop / Skin Collections"
+    subtitle="Bốn bộ skin Twitch Drops được tuyển chọn · Four curated skin packs"
+    spaced
+  />
+  <div class="grid">
+    {collections.map((c) => <CollectionCard {...c} />)}
+  </div>
+
+  <SectionTitle
+    id="software"
+    title="④ Phần Mềm / Software"
+    subtitle="Các tài khoản phần mềm bản quyền cấp sẵn"
+    spaced
+  />
+  <SoftwareSection />
+
+  <SectionTitle
+    id="guides"
+    title="⑤ Hướng Dẫn / Guides"
+    subtitle="Mở rộng để xem chi tiết · Click to expand"
+    spaced
+  />
+  <div class="guides">
+    {
+      guides.map(async (guide) => {
+        const { Content } = await guide.render();
+        return (
+          <Guide
+            icon={guide.data.icon}
+            title={guide.data.title}
+            subtitle={guide.data.subtitle}
+            open={guide.data.open}
+          >
+            <Content />
+          </Guide>
+        );
+      })
+    }
+  </div>
+
+  <SectionTitle
+    id="warranty"
+    title="⑥ Chính Sách Bảo Hành / Warranty"
+    subtitle="Cam kết &amp; điều khoản"
+    spaced
+  />
+  <WarrantySection />
+
+  <Footer />
+</Layout>
