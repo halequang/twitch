@@ -8,7 +8,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "wrangler:dev": "wrangler dev",
-    "deploy": "astro build && wrangler deploy"
+    "deploy": "astro build && wrangler deploy",
+    "upload-images": "bash scripts/upload-images.sh"
   },
   "dependencies": {
     "astro": "^4.16.0"

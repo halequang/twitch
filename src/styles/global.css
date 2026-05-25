@@ -491,6 +491,7 @@ footer .gold { color: var(--gold-dim); }
 .guide-body p { margin: 10px 0; color: var(--text-dim); }
 .guide-body ol, .guide-body ul { padding-left: 22px; margin: 10px 0; color: var(--text-dim); }
 .guide-body li { margin: 6px 0; }
+.guide-body img { max-width: 100%; height: auto; border-radius: 4px; margin: 10px 0; }
 .guide-body li::marker { color: var(--gold-dim); }
 .guide-body strong { color: var(--text); font-weight: 600; }
 .guide-body em { color: var(--gold-dim); }
