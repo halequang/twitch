@@ -1,0 +1,206 @@
+---
+import { feedback, FEEDBACK_NOTION_URL } from '../data/feedback';
+
+const totalCount = feedback.length;
+const dateFmt = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' });
+---
+
+<div class="feedback-wrap">
+  <div class="feedback-header">
+    <div class="rule"></div>
+    <span>⚜ KHÁCH HÀNG ĐÃ MUA · CUSTOMER RECEIPTS ⚜</span>
+    <div class="rule"></div>
+  </div>
+
+  {feedback.length === 0 ? (
+    <div class="feedback-empty">
+      <p>No featured receipts yet — drop screenshots in <code>pending-images/feedback/</code>, run <code>npm run upload-images</code>, then add entries to <code>src/data/feedback.ts</code>.</p>
+      <a class="feedback-cta" href={FEEDBACK_NOTION_URL} target="_blank" rel="noopener">
+        View full archive on Notion <span class="arrow">↗</span>
+      </a>
+    </div>
+  ) : (
+    <>
+      <div class="feedback-grid">
+        {feedback.map((item) => (
+          <a class="feedback-card" href={item.image} target="_blank" rel="noopener">
+            <div class="feedback-thumb">
+              <img src={item.image} alt={`Receipt from ${item.name} on ${item.date}`} loading="lazy" />
+              <span class={`feedback-type type-${item.type.toLowerCase().replace(/[^a-z0-9]/g, '')}`}>{item.type}</span>
+            </div>
+            <div class="feedback-meta">
+              <div class="feedback-name">{item.name}</div>
+              <div class="feedback-sub">
+                <span class="feedback-date">{dateFmt.format(new Date(item.date))}</span>
+                {item.note && <span class="feedback-note">· {item.note}</span>}
+              </div>
+            </div>
+          </a>
+        ))}
+      </div>
+
+      <div class="feedback-footer">
+        <a class="feedback-cta" href={FEEDBACK_NOTION_URL} target="_blank" rel="noopener">
+          View all {totalCount > 6 ? `${totalCount}+ ` : ''}receipts on Notion <span class="arrow">↗</span>
+        </a>
+      </div>
+    </>
+  )}
+</div>
+
+<style>
+  .feedback-wrap {
+    width: 100%;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  .feedback-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 22px;
+    font-family: Georgia, serif;
+    font-size: clamp(13px, 2vw, 17px);
+    color: #e8b659;
+    letter-spacing: 2px;
+    text-shadow: 0 0 10px rgba(232, 182, 89, 0.3);
+  }
+  .feedback-header span { white-space: nowrap; }
+  .feedback-header .rule { flex: 1; height: 1px; background: linear-gradient(90deg, transparent, #6b4520); }
+  .feedback-header .rule:last-child { background: linear-gradient(90deg, #6b4520, transparent); }
+
+  .feedback-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  .feedback-card {
+    display: flex;
+    flex-direction: column;
+    background: linear-gradient(180deg, #15090a 0%, #0a0503 100%);
+    border: 1px solid #3a2810;
+    border-radius: 6px;
+    overflow: hidden;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
+  }
+  .feedback-card:hover {
+    border-color: #d4a04a;
+    transform: translateY(-2px);
+    box-shadow: 0 10px 28px rgba(212, 160, 74, 0.25);
+  }
+
+  .feedback-thumb {
+    position: relative;
+    aspect-ratio: 3 / 4;
+    background: #000;
+    overflow: hidden;
+  }
+  .feedback-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.4s ease;
+  }
+  .feedback-card:hover .feedback-thumb img { transform: scale(1.04); }
+
+  .feedback-type {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    padding: 4px 9px;
+    border-radius: 999px;
+    color: #1a0a05;
+    background: linear-gradient(135deg, #f5d488 0%, #d4a04a 50%, #b3812e 100%);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  }
+  .feedback-type.type-keypoe2 {
+    background: linear-gradient(135deg, #c896ff 0%, #8b5cf6 50%, #6b3fc7 100%);
+    color: #fff;
+  }
+
+  .feedback-meta {
+    padding: 12px 14px 14px;
+    border-top: 1px solid #3a2810;
+  }
+
+  .feedback-name {
+    font-family: Georgia, serif;
+    font-size: 15px;
+    color: #f5d488;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+
+  .feedback-sub {
+    color: #a8763a;
+    font-size: 12px;
+    font-family: 'Courier New', monospace;
+    letter-spacing: 0.5px;
+  }
+  .feedback-note { color: #c89656; }
+
+  .feedback-empty {
+    background: linear-gradient(180deg, #15090a 0%, #0a0503 100%);
+    border: 1px dashed #3a2810;
+    border-radius: 6px;
+    padding: 28px 24px;
+    text-align: center;
+    color: #a8763a;
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .feedback-empty code {
+    background: #000;
+    color: #d4a04a;
+    padding: 1px 6px;
+    border-radius: 2px;
+    border: 1px solid #3a2810;
+    font-size: 12px;
+  }
+  .feedback-empty p { margin: 0 0 16px; }
+
+  .feedback-footer {
+    margin-top: 22px;
+    text-align: center;
+  }
+
+  .feedback-cta {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 22px;
+    background: transparent;
+    border: 1px solid #6b4520;
+    border-radius: 999px;
+    color: #d4a04a;
+    text-decoration: none;
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    font-weight: 600;
+    transition: border-color 0.25s ease, color 0.25s ease, background 0.25s ease;
+  }
+  .feedback-cta:hover {
+    border-color: #d4a04a;
+    color: #f5d488;
+    background: rgba(212, 160, 74, 0.08);
+  }
+  .feedback-cta .arrow { transition: transform 0.25s ease; }
+  .feedback-cta:hover .arrow { transform: translate(2px, -2px); }
+
+  @media (max-width: 720px) {
+    .feedback-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  }
+
+  @media (max-width: 460px) {
+    .feedback-grid { grid-template-columns: 1fr; }
+  }
+</style>

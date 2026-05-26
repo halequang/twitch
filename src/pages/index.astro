@@ -11,6 +11,7 @@ import PricingBanner from '../components/PricingBanner.astro';
 import CanvaEmbed from '../components/CanvaEmbed.astro';
 import SoftwareSection from '../components/SoftwareSection.astro';
 import WarrantySection from '../components/WarrantySection.astro';
+import ContactSection from '../components/ContactSection.astro';
 
 const collections = [
   {
@@ -53,7 +54,15 @@ const guides = (await getCollection('guides')).sort(
   (a, b) => a.data.order - b.data.order
 );
 
+const renderedGuides = await Promise.all(
+  guides.map(async (guide) => {
+    const { Content } = await guide.render();
+    return { data: guide.data, Content };
+  })
+);
+
 const canvaUrl = 'https://www.canva.com/design/DAG0smoSLKc/mJTJjk8UFfV_yvpRTiO_fw/view';
+const feedbackCanvaUrl = 'https://www.canva.com/design/DAHKxfinCJM/m7GQT4cafqLAlpSc0hHpwQ/view';
 
 const navItems = [
   { href: '#pricing',  num: '①', label: 'Bảng Giá' },
@@ -62,6 +71,8 @@ const navItems = [
   { href: '#software', num: '④', label: 'Phần Mềm' },
   { href: '#guides',   num: '⑤', label: 'Hướng Dẫn' },
   { href: '#warranty', num: '⑥', label: 'Bảo Hành' },
+  { href: '#feedback', num: '⑦', label: 'Feedback' },
+  { href: '#contact',  num: '⑧', label: 'Liên Hệ' },
 ];
 ---
 
@@ -97,7 +108,16 @@ const navItems = [
     spaced
   />
   <div class="grid">
-    {collections.map((c) => <CollectionCard {...c} />)}
+    {collections.map((c) => (
+      <CollectionCard
+        href={c.href}
+        icon={c.icon}
+        title={c.title}
+        subtitle={c.subtitle}
+        description={c.description}
+        badge={c.badge}
+      />
+    ))}
   </div>
 
   <SectionTitle
@@ -115,21 +135,16 @@ const navItems = [
     spaced
   />
   <div class="guides">
-    {
-      guides.map(async (guide) => {
-        const { Content } = await guide.render();
-        return (
-          <Guide
-            icon={guide.data.icon}
-            title={guide.data.title}
-            subtitle={guide.data.subtitle}
-            open={guide.data.open}
-          >
-            <Content />
-          </Guide>
-        );
-      })
-    }
+    {renderedGuides.map(({ data, Content }) => (
+      <Guide
+        icon={data.icon}
+        title={data.title}
+        subtitle={data.subtitle}
+        open={data.open}
+      >
+        <Content />
+      </Guide>
+    ))}
   </div>
 
   <SectionTitle
@@ -139,6 +154,26 @@ const navItems = [
     spaced
   />
   <WarrantySection />
+
+  <SectionTitle
+    id="feedback"
+    title="⑦ Feedback"
+    subtitle="Hoá đơn khách hàng đã mua · Verified customer receipts"
+    spaced
+  />
+  <CanvaEmbed
+    src={feedbackCanvaUrl}
+    title="FunGaming · customer feedback"
+    viewUrl={feedbackCanvaUrl}
+  />
+
+  <SectionTitle
+    id="contact"
+    title="⑧ Liên Hệ / Contact"
+    subtitle="Mua hàng &amp; hỗ trợ · Buy &amp; support"
+    spaced
+  />
+  <ContactSection />
 
   <Footer />
 </Layout>

@@ -8,7 +8,7 @@ interface Props {
 const {
   brand = '',
   tagline = 'Path of Exile · Twitch Drops · Account Shop',
-  taglineVi = 'Trusted Shop · POE Top-up · Account · Phần mềm',
+  taglineVi = 'Trusted Shop since 2024 · POE Top-up · Account · Phần mềm',
 } = Astro.props;
 ---
 
@@ -39,6 +39,7 @@ const {
   <div class="brand-wordmark">
     <span class="brand-fun">FUN</span><span class="brand-gaming">GAMING</span>
   </div>
+  <p class="est-badge">⟡ EST. 2024 ⟡</p>
   <h1>{brand}</h1>
   <p class="tagline">{tagline}</p>
   <p class="tagline-vi">{taglineVi}</p>
@@ -48,3 +49,13 @@ const {
     <span class="line"></span>
   </div>
 </header>
+
+<style>
+  .est-badge {
+    margin: 6px 0 0;
+    font-size: 11px;
+    letter-spacing: 0.25em;
+    color: var(--gold-dim);
+    text-align: center;
+  }
+</style>

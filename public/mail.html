@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mail Reader</title>
+<style>
+  :root { color-scheme: dark light; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    max-width: 780px; margin: 0 auto; padding: 24px;
+    background: #0e0f12; color: #e6e8eb;
+  }
+  h1 { font-size: 22px; margin: 0 0 16px; }
+  h2 { font-size: 15px; margin: 24px 0 8px; color: #9aa0a6; text-transform: uppercase; letter-spacing: .05em; }
+  form { display: grid; gap: 8px; padding: 16px; background: #15171b; border: 1px solid #23262d; border-radius: 8px; }
+  input, textarea, select, button {
+    font: inherit; padding: 8px 10px; border-radius: 6px;
+    background: #0e0f12; color: #e6e8eb; border: 1px solid #2a2e36;
+  }
+  textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 70px; resize: vertical; }
+  button {
+    background: #2b6cb0; border-color: #2b6cb0; color: white; cursor: pointer; font-weight: 600;
+  }
+  button:hover { background: #2c5282; }
+  button:disabled { opacity: .6; cursor: not-allowed; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > input { flex: 1; }
+  .hint { font-size: 12px; color: #767b83; }
+  .status { font-size: 13px; margin-top: 6px; min-height: 1.2em; }
+  .status.ok { color: #6ee7a4; }
+  .status.err { color: #f88; }
+  .email { border: 1px solid #23262d; border-radius: 8px; padding: 12px; margin-top: 10px; background: #15171b; }
+  .email h3 { margin: 0 0 4px; font-size: 15px; }
+  .email .meta { font-size: 12px; color: #9aa0a6; margin-bottom: 8px; }
+  .email .code { display: inline-block; background: #1f3a59; color: #cde2ff; padding: 2px 8px; border-radius: 4px; font-family: ui-monospace, monospace; }
+  .email pre { white-space: pre-wrap; word-wrap: break-word; font-size: 13px; max-height: 320px; overflow: auto; margin: 6px 0 0; }
+</style>
+</head>
+<body>
+  <h1>📥 Mail Reader</h1>
+
+  <h2>Save accounts</h2>
+  <form id="save-form">
+    <label class="hint" for="save-input">
+      Paste <code>email|password|refresh_token|client_id</code> — one per line, up to <strong>50</strong>.
+    </label>
+    <textarea id="save-input" rows="8"
+      placeholder="user1@outlook.com|password|M.C555_...|9e5f94bc-...&#10;user2@outlook.com|password|M.C555_...|9e5f94bc-...&#10;..." required></textarea>
+    <div class="row">
+      <button type="submit">Save</button>
+      <span id="save-status" class="status"></span>
+    </div>
+  </form>
+
+  <h2>Read mail</h2>
+  <form id="read-form">
+    <div class="row">
+      <input id="read-email" type="email" placeholder="user@outlook.com" required />
+      <select id="read-count">
+        <option value="1">1 email</option>
+        <option value="2" selected>2 emails</option>
+      </select>
+      <button type="submit">Read</button>
+    </div>
+    <div id="read-status" class="status"></div>
+  </form>
+
+  <div id="results"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function setStatus(el, msg, kind) {
+  el.textContent = msg;
+  el.className = "status " + (kind || "");
+}
+
+async function apiPost(path, body) {
+  const resp = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await resp.json();
+  if (!resp.ok || !data.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  return data;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[c]);
+}
+
+$("save-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const inputEl = $("save-input");
+  const input = inputEl.value;
+  const lineCount = input.split(/\r?\n/).filter((l) => l.trim().length > 0).length;
+  const btn = e.target.querySelector("button");
+  const status = $("save-status");
+  if (lineCount === 0) {
+    setStatus(status, "Paste at least one line", "err");
+    return;
+  }
+  if (lineCount > 50) {
+    setStatus(status, `Too many lines (${lineCount}) — max 50 per save`, "err");
+    return;
+  }
+  btn.disabled = true;
+  setStatus(status, `Saving ${lineCount}...`);
+  try {
+    const data = await apiPost("/api/save-token", { input });
+    const errCount = (data.errors || []).length;
+    if (errCount === 0) {
+      setStatus(status, `Saved ${data.saved}`, "ok");
+      inputEl.value = "";
+    } else {
+      const firstFew = data.errors.slice(0, 3).map((e) => `line ${e.line}: ${e.error}`).join("; ");
+      const more = errCount > 3 ? ` (+${errCount - 3} more)` : "";
+      setStatus(status, `Saved ${data.saved}, ${errCount} failed — ${firstFew}${more}`, "err");
+    }
+  } catch (err) {
+    setStatus(status, err.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("read-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = $("read-email").value.trim();
+  const numEmails = Number($("read-count").value);
+  const btn = e.target.querySelector("button");
+  const status = $("read-status");
+  const results = $("results");
+  results.innerHTML = "";
+  btn.disabled = true;
+  setStatus(status, "Reading...");
+  try {
+    const data = await apiPost("/api/read-mail", { email, numEmails });
+    const emails = data.emails || [];
+    setStatus(status, `Got ${emails.length} email(s)`, "ok");
+    results.innerHTML = emails.map((m, i) => `
+      <div class="email">
+        <h3>#${i + 1} — ${escapeHtml(m.subject || "(no subject)")}</h3>
+        <div class="meta">From: ${escapeHtml(m.from || "?")}${m.code ? ` · code: <span class="code">${escapeHtml(m.code)}</span>` : ""}</div>
+        <pre>${escapeHtml(m.readable || "")}</pre>
+      </div>
+    `).join("");
+  } catch (err) {
+    setStatus(status, err.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
