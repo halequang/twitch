@@ -53,13 +53,26 @@
     </div>
   </form>
 
+  <h2>Refresh stale tokens</h2>
+  <form id="refresh-form">
+    <label class="hint">
+      Rotates the refresh_token for accounts whose <code>last_refresh_time</code> is older than
+      <strong>2.5 months (75 days)</strong>. Fresh accounts are skipped. Up to 40 per click —
+      run again if more remain.
+    </label>
+    <div class="row">
+      <button type="submit">Refresh stale</button>
+      <span id="refresh-status" class="status"></span>
+    </div>
+  </form>
+
   <h2>Read mail</h2>
   <form id="read-form">
     <div class="row">
       <input id="read-email" type="email" placeholder="user@outlook.com" required />
       <select id="read-count">
-        <option value="1">1 email</option>
-        <option value="2" selected>2 emails</option>
+        <option value="1" selected>1 email</option>
+        <option value="2">2 emails</option>
       </select>
       <button type="submit">Read</button>
     </div>
@@ -121,6 +134,34 @@ $("save-form").addEventListener("submit", async (e) => {
       const more = errCount > 3 ? ` (+${errCount - 3} more)` : "";
       setStatus(status, `Saved ${data.saved}, ${errCount} failed — ${firstFew}${more}`, "err");
     }
+  } catch (err) {
+    setStatus(status, err.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("refresh-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector("button");
+  const status = $("refresh-status");
+  btn.disabled = true;
+  setStatus(status, "Refreshing...");
+  try {
+    const data = await apiPost("/api/refresh-stale", {});
+    const parts = [
+      `refreshed ${data.refreshed}/${data.scanned}`,
+      `failed ${data.failed}`,
+      `remaining ${data.remaining_stale}`,
+    ];
+    const kind = data.failed > 0 ? "err" : "ok";
+    let msg = parts.join(" · ");
+    if (data.errors && data.errors.length > 0) {
+      const firstFew = data.errors.slice(0, 2).map((e) => `${e.email}: ${e.error}`).join("; ");
+      const more = data.errors.length > 2 ? ` (+${data.errors.length - 2} more)` : "";
+      msg += ` — ${firstFew}${more}`;
+    }
+    setStatus(status, msg, kind);
   } catch (err) {
     setStatus(status, err.message, "err");
   } finally {

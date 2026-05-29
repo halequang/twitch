@@ -26,6 +26,7 @@ const cleanUrlMiddleware = {
 };
 
 export default defineConfig({
+  site: 'https://fungamingvn.shop',
   outDir: './dist',
   publicDir: './public',
   build: { format: 'file' },

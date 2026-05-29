@@ -5,13 +5,19 @@ interface Props {
   title: string;
   description?: string;
   lang?: string;
+  image?: string;
 }
 
 const {
   title,
   description = 'Tổng hợp skin Twitch Drops cho Path of Exile và Path of Exile 2.',
   lang = 'vi',
+  image = '/FuNGAMING%20logo.png',
 } = Astro.props;
+
+const siteOrigin = Astro.site?.origin ?? 'https://fungamingvn.shop';
+const canonicalUrl = new URL(Astro.url.pathname, siteOrigin).href;
+const ogImage = new URL(image, siteOrigin).href;
 ---
 
 <!DOCTYPE html>
@@ -21,9 +27,27 @@ const {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{title}</title>
     <meta name="description" content={description} />
+    <link rel="canonical" href={canonicalUrl} />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="alternate icon" href="/FuNGAMING%20logo.png" />
     <link rel="apple-touch-icon" href="/FuNGAMING%20logo.png" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="FunGaming VN" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonicalUrl} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="500" />
+    <meta property="og:image:height" content="500" />
+    <meta property="og:image:alt" content="FunGaming VN" />
+    <meta property="og:locale" content="vi_VN" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

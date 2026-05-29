@@ -1,0 +1,442 @@
+---
+interface Props {
+  badge?: string;
+  title?: string;
+  subtitle?: string;
+  body?: string;
+  couponAmount?: string;
+  couponCode?: string;
+  couponNote?: string;
+  storageKey?: string;
+  ttlHours?: number;
+}
+
+const {
+  badge = '✦ Ra Mắt 30/05/2026 ✦',
+  title = 'RETURN OF THE ANCIENTS',
+  subtitle = 'Path of Exile 2 · Sự Kiện Ra Mắt',
+  body = 'POE 2 chính thức mở server mùa mới vào ngày 30/05. Early Access Supporter Pack giảm 50% đến 12/06. FunGaming sẵn Account, Top-up Point & Skin Pack cho ngày ra mắt.',
+  couponAmount = '20.000 vnd',
+  couponCode = 'ANCIENTS20',
+  couponNote = 'Áp dụng khi mua qua Telegram bot · Redeem via Telegram bot',
+  storageKey = 'fg_promo_ros2026',
+  ttlHours = 24,
+} = Astro.props;
+---
+
+<div id="promoModal" class="promo-overlay" role="dialog" aria-modal="true" aria-labelledby="promoTitle" hidden>
+  <div class="promo-card">
+    <button type="button" class="promo-close" aria-label="Đóng">×</button>
+    <p class="promo-badge">{badge}</p>
+    <h2 id="promoTitle" class="promo-title">{title}</h2>
+    <p class="promo-subtitle">{subtitle}</p>
+    <div class="promo-divider">
+      <span class="line"></span>
+      <span class="ornament">✦</span>
+      <span class="line"></span>
+    </div>
+    <p class="promo-body">{body}</p>
+
+    <div class="promo-coupon" role="group" aria-label="Mã giảm giá">
+      <div class="promo-coupon-amount">
+        <span class="promo-coupon-amount-label">Voucher</span>
+        <span class="promo-coupon-amount-value">{couponAmount}</span>
+      </div>
+      <div class="promo-coupon-divider" aria-hidden="true"></div>
+      <div class="promo-coupon-code-wrap">
+        <span class="promo-coupon-code-label">Mã / Code</span>
+        <button type="button" class="promo-coupon-code" data-code={couponCode} aria-label={`Copy mã ${couponCode}`}>
+          <span class="promo-coupon-code-text">{couponCode}</span>
+          <span class="promo-coupon-copy">Copy</span>
+        </button>
+      </div>
+    </div>
+    <p class="promo-coupon-note">{couponNote}</p>
+
+    <a class="banner-cta" href="https://t.me/fungamingvnbot" target="_blank" rel="noopener">
+      <svg class="banner-cta-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9.999 15.2 9.84 19.42c.34 0 .49-.146.67-.32l1.6-1.53 3.32 2.43c.61.34 1.05.16 1.21-.56l2.2-10.3c.21-.94-.34-1.31-.94-1.09L4.4 13.34c-.91.35-.9.86-.16 1.09l3.83 1.2 8.89-5.6c.42-.27.8-.12.49.16" fill="currentColor"></path>
+      </svg>
+      <span class="banner-cta-text">
+        <span class="banner-cta-line-1">Mua ngay qua bot tự động</span>
+        <span class="banner-cta-line-2">@fungamingvnbot · 24/7</span>
+      </span>
+      <span class="banner-cta-arrow">↗</span>
+    </a>
+  </div>
+</div>
+
+<style>
+  .promo-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(7, 7, 10, 0.78);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    animation: promo-fade 240ms ease-out;
+  }
+
+  .promo-overlay[hidden] {
+    display: none;
+  }
+
+  .promo-card {
+    position: relative;
+    width: 100%;
+    max-width: 460px;
+    padding: 36px 28px 28px;
+    background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 100%);
+    border: 1px solid var(--gold-dim);
+    border-radius: 4px;
+    box-shadow:
+      0 0 0 1px rgba(200, 164, 74, 0.08),
+      0 30px 60px rgba(0, 0, 0, 0.6),
+      0 0 80px rgba(200, 164, 74, 0.06);
+    text-align: center;
+    animation: promo-rise 280ms ease-out;
+  }
+
+  .promo-close {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    width: 32px;
+    height: 32px;
+    background: transparent;
+    border: none;
+    color: var(--gold-dim);
+    font-size: 24px;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 150ms ease;
+  }
+
+  .promo-close:hover {
+    color: var(--gold-bright);
+  }
+
+  .promo-badge {
+    font-size: 11px;
+    letter-spacing: 0.3em;
+    color: var(--gold-dim);
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+
+  .promo-title {
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    font-size: 24px;
+    color: var(--gold-bright);
+    margin-bottom: 4px;
+  }
+
+  .promo-subtitle {
+    font-size: 13px;
+    color: var(--text-dim);
+    font-style: italic;
+    margin-bottom: 18px;
+  }
+
+  .promo-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 auto 18px;
+    max-width: 220px;
+  }
+
+  .promo-divider .line {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(to right, transparent, var(--gold-dim), transparent);
+  }
+
+  .promo-divider .ornament {
+    color: var(--gold);
+    font-size: 12px;
+  }
+
+  .promo-body {
+    font-size: 14px;
+    line-height: 1.65;
+    color: var(--text);
+    margin-bottom: 20px;
+  }
+
+  .promo-coupon {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    margin: 0 auto 8px;
+    max-width: 360px;
+    padding: 14px 16px;
+    border: 1px dashed var(--gold);
+    border-radius: 4px;
+    background:
+      radial-gradient(ellipse at center, rgba(200, 164, 74, 0.08) 0%, transparent 70%),
+      linear-gradient(180deg, rgba(200, 164, 74, 0.04) 0%, transparent 100%);
+    position: relative;
+  }
+
+  .promo-coupon::before,
+  .promo-coupon::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    width: 12px;
+    height: 12px;
+    background: var(--bg-1);
+    border: 1px solid var(--gold-dim);
+    border-radius: 50%;
+    transform: translateY(-50%);
+  }
+
+  .promo-coupon::before { left: -7px; }
+  .promo-coupon::after  { right: -7px; }
+
+  .promo-coupon-amount {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+  }
+
+  .promo-coupon-amount-label {
+    font-size: 10px;
+    letter-spacing: 0.25em;
+    color: var(--gold-dim);
+    text-transform: uppercase;
+  }
+
+  .promo-coupon-amount-value {
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    font-size: 22px;
+    color: var(--gold-bright);
+    line-height: 1.1;
+  }
+
+  .promo-coupon-divider {
+    width: 1px;
+    margin: 0 14px;
+    background: repeating-linear-gradient(
+      to bottom,
+      var(--gold-dim) 0,
+      var(--gold-dim) 3px,
+      transparent 3px,
+      transparent 7px
+    );
+  }
+
+  .promo-coupon-code-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+  }
+
+  .promo-coupon-code-label {
+    font-size: 10px;
+    letter-spacing: 0.25em;
+    color: var(--gold-dim);
+    text-transform: uppercase;
+  }
+
+  .promo-coupon-code {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: transparent;
+    border: 1px solid var(--gold-dim);
+    border-radius: 3px;
+    color: var(--gold-bright);
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+
+  .promo-coupon-code:hover {
+    border-color: var(--gold);
+    background: rgba(200, 164, 74, 0.08);
+  }
+
+  .promo-coupon-code.copied {
+    border-color: var(--gold-bright);
+    color: var(--gold-bright);
+  }
+
+  .promo-coupon-copy {
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--gold-dim);
+    border-left: 1px solid var(--gold-dim);
+    padding-left: 8px;
+  }
+
+  .promo-coupon-note {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-style: italic;
+    margin-bottom: 22px;
+  }
+
+  .banner-cta {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 18px;
+    border: 1px solid var(--gold);
+    border-radius: 4px;
+    background: linear-gradient(180deg, rgba(200, 164, 74, 0.12) 0%, rgba(200, 164, 74, 0.04) 100%);
+    color: var(--gold-bright);
+    text-decoration: none;
+    transition: all 180ms ease;
+    max-width: 360px;
+    width: 100%;
+  }
+
+  .banner-cta:hover {
+    border-color: var(--gold-bright);
+    background: linear-gradient(180deg, rgba(200, 164, 74, 0.2) 0%, rgba(200, 164, 74, 0.08) 100%);
+    color: #fff;
+  }
+
+  .banner-cta-icon {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    color: var(--gold-bright);
+  }
+
+  .banner-cta:hover .banner-cta-icon {
+    color: #fff;
+  }
+
+  .banner-cta-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    line-height: 1.2;
+  }
+
+  .banner-cta-line-1 {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+
+  .banner-cta-line-2 {
+    font-size: 11px;
+    color: var(--gold-dim);
+    letter-spacing: 0.12em;
+    margin-top: 3px;
+  }
+
+  .banner-cta-arrow {
+    font-size: 18px;
+    color: var(--gold-dim);
+    transition: transform 180ms ease, color 180ms ease;
+  }
+
+  .banner-cta:hover .banner-cta-arrow {
+    color: var(--gold-bright);
+    transform: translate(2px, -2px);
+  }
+
+  @keyframes promo-fade {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  @keyframes promo-rise {
+    from { opacity: 0; transform: translateY(12px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .promo-overlay, .promo-card { animation: none; }
+  }
+
+  @media (max-width: 480px) {
+    .promo-card { padding: 32px 20px 24px; }
+    .promo-title { font-size: 20px; }
+  }
+</style>
+
+<script is:inline define:vars={{ storageKey, ttlHours }}>
+  (function () {
+    const modal = document.getElementById('promoModal');
+    if (!modal) return;
+
+    const now = Date.now();
+    const ttlMs = ttlHours * 60 * 60 * 1000;
+
+    try {
+      const stamp = Number(localStorage.getItem(storageKey) || 0);
+      if (stamp && now - stamp < ttlMs) return;
+    } catch (_) {
+      // localStorage blocked — still show, but won't be able to suppress next time
+    }
+
+    const dismiss = () => {
+      modal.hidden = true;
+      try { localStorage.setItem(storageKey, String(Date.now())); } catch (_) {}
+      document.body.style.overflow = '';
+      document.removeEventListener('keydown', onKey);
+    };
+
+    const onKey = (e) => { if (e.key === 'Escape') dismiss(); };
+
+    setTimeout(() => {
+      modal.hidden = false;
+      document.body.style.overflow = 'hidden';
+      document.addEventListener('keydown', onKey);
+    }, 600);
+
+    modal.querySelector('.promo-close').addEventListener('click', dismiss);
+    modal.querySelector('.banner-cta').addEventListener('click', dismiss);
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) dismiss();
+    });
+
+    const codeBtn = modal.querySelector('.promo-coupon-code');
+    if (codeBtn) {
+      const copyLabel = codeBtn.querySelector('.promo-coupon-copy');
+      const originalLabel = copyLabel ? copyLabel.textContent : 'Copy';
+      codeBtn.addEventListener('click', async () => {
+        const code = codeBtn.getAttribute('data-code') || '';
+        try {
+          await navigator.clipboard.writeText(code);
+        } catch (_) {
+          const range = document.createRange();
+          range.selectNodeContents(codeBtn.querySelector('.promo-coupon-code-text'));
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+        codeBtn.classList.add('copied');
+        if (copyLabel) copyLabel.textContent = 'Copied';
+        setTimeout(() => {
+          codeBtn.classList.remove('copied');
+          if (copyLabel) copyLabel.textContent = originalLabel;
+        }, 1600);
+      });
+    }
+  })();
+</script>
