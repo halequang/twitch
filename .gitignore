@@ -6,3 +6,5 @@ dist
 .wrangler
 .assets-backup
 pending-images
+.dev.vars
+.cf-bootstrap
