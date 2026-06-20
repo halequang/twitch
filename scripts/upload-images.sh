@@ -15,8 +15,7 @@ PARALLEL="${PARALLEL:-8}"
 
 mkdir -p "$ARCHIVE"
 
-FILE_LIST="$(find "$SRC" -type f ! -path "*/.uploaded/*" ! -name ".*" | sort)"
-COUNT="$(printf '%s\n' "$FILE_LIST" | grep -c . || true)"
+COUNT="$(find "$SRC" -type f ! -path "*/.uploaded/*" ! -name ".*" | wc -l | tr -d ' ')"
 if [ "$COUNT" -eq 0 ]; then
   echo "No files in $SRC — drop images there and rerun." >&2
   exit 0
@@ -24,7 +23,7 @@ fi
 
 echo "Uploading $COUNT file(s) to R2 (parallel=$PARALLEL)…" >&2
 
-printf '%s\n' "$FILE_LIST" | xargs -I {} -P "$PARALLEL" sh -c '
+find "$SRC" -type f ! -path "*/.uploaded/*" ! -name ".*" -print0 | xargs -0 -I {} -P "$PARALLEL" sh -c '
   f="$1"
   rel="${f#'"$SRC"'/}"
   if npx --yes wrangler r2 object put "'"$BUCKET"'/$rel" --file "$f" --remote >/dev/null 2>&1; then

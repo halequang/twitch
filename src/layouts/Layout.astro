@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css';
+import AdvisorWidget from '../components/AdvisorWidget.astro';
 
 interface Props {
   title: string;
@@ -61,6 +62,8 @@ const ogImage = new URL(image, siteOrigin).href;
     </div>
 
     <button id="toTop" type="button" aria-label="Back to top" title="Back to top"></button>
+
+    <AdvisorWidget />
 
     <script is:inline>
       (function () {

@@ -198,6 +198,29 @@ body::after, body::before,
   content: none !important;
   display: none !important;
 }
+
+.saydis-search {
+  margin: 18px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.saydis-search input {
+  width: 100%;
+  max-width: 420px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  background: rgba(128, 128, 128, 0.08);
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  outline: none;
+}
+.saydis-search input::placeholder { opacity: 0.55; }
+.saydis-search input:focus { border-color: rgba(128, 128, 128, 0.7); }
+.saydis-search-empty { opacity: 0.7; font-size: 14px; }
 </style>
 </head>
 <body class="bgpurple skin-poe skin-catalog-square saydis-new saydis-new-4 dark" data-site-card-zoom="" data-site-default-theme="dark" data-site-selection-lock="" data-site-theme="" data-site-totop="" data-site-total-from-sections="" data-site-count-singular="item" data-site-count-plural="items" data-site-auto-count="">
@@ -210,6 +233,11 @@ body::after, body::before,
 <nav class="saydis-related"><span>Other products</span><div><a href="/skins2" translate="no" data-preserve-text="medium" class="notranslate" data-preserve-watch="">medium</a><a href="/skins3" translate="no" data-preserve-text="low" class="notranslate" data-preserve-watch="">low</a><a href="/skinsOLD" translate="no" data-preserve-text="old" class="notranslate" data-preserve-watch="">old</a><a href="/POE2" translate="no" data-preserve-text="POE 2" class="notranslate" data-preserve-watch="">POE 2</a></div></nav>
     </header>
     <main class="saydis-main">
+
+      <div class="saydis-search">
+        <input type="search" id="itemSearch" placeholder="Search items…" autocomplete="off" aria-label="Search items">
+        <span class="saydis-search-empty" id="searchEmpty" hidden>No items found</span>
+      </div>
 
       <section class="saydis-list-section" id="s01">
         <aside><h2 translate="no" data-preserve-text="Wings" class="notranslate" data-preserve-watch="">Wings</h2><span class="saydis-section-count"><b>8</b><em>items</em></span></aside>
@@ -282,5 +310,34 @@ body::after, body::before,
 </main>
   </div>
 
+<script>
+(function () {
+  var input = document.getElementById('itemSearch');
+  if (!input) return;
+  var empty = document.getElementById('searchEmpty');
+  var sections = [].slice.call(document.querySelectorAll('.saydis-list-section')).map(function (sec) {
+    var cards = [].slice.call(sec.querySelectorAll('.saydis-card')).map(function (card) {
+      var el = card.querySelector('.saydis-copy strong');
+      return { card: card, text: (el ? el.textContent : '').toLowerCase() };
+    });
+    return { sec: sec, cards: cards };
+  });
+  function apply() {
+    var q = input.value.trim().toLowerCase();
+    var total = 0;
+    sections.forEach(function (s) {
+      var visible = 0;
+      s.cards.forEach(function (it) {
+        var show = !q || it.text.indexOf(q) !== -1;
+        it.card.style.display = show ? '' : 'none';
+        if (show) { visible++; total++; }
+      });
+      s.sec.style.display = visible ? '' : 'none';
+    });
+    if (empty) empty.hidden = total !== 0;
+  }
+  input.addEventListener('input', apply);
+})();
+</script>
 
 </body></html>

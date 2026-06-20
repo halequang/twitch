@@ -68,6 +68,48 @@ After deploy, the Worker is live at the routes configured in `wrangler.toml`
 └── package.json
 ```
 
+## AI buy advisor (Gemini)
+
+A floating "Tư vấn" chat widget (`src/components/AdvisorWidget.astro`, mounted in
+`Layout.astro`) lets customers ask which product to buy. It posts the conversation
+to `POST /api/advisor` in the Worker, which calls the Google Gemini API with a
+catalog-aware Vietnamese system prompt and returns the reply.
+
+**Setup — store the API key as a Worker secret (never commit it):**
+
+```bash
+# Get a key at https://aistudio.google.com/apikey
+wrangler secret put GEMINI_API_KEY
+# paste the key when prompted
+```
+
+Optional: override the model (defaults to `gemini-2.5-flash`) by adding a var to
+`wrangler.toml`:
+
+```toml
+[vars]
+GEMINI_MODEL = "gemini-2.5-flash"
+```
+
+**Local dev:** put the key in a gitignored `.dev.vars` file at the repo root:
+
+```
+GEMINI_API_KEY=your-key-here
+```
+
+Then either dev server works — both serve `POST /api/advisor`:
+
+- `npm run dev` — Astro dev server (hot reload). A dev-only Vite middleware in
+  `astro.config.mjs` reads `.dev.vars` and calls the advisor.
+- `npm run build && npm run wrangler:dev` — runs the real Worker against `./dist`.
+
+Without a key, `/api/advisor` returns 503 and the widget shows a "tạm bảo trì"
+fallback pointing to the Telegram bot.
+
+The advice logic and product catalog live in **`src/lib/advisor.js`** (single
+source of truth, imported by both the Worker and the dev middleware) — keep the
+`CATALOG` there in sync with `src/components/PricingBanner.astro`.
+
 ## Customising the worker
 
 The worker (`worker/index.js`) maps clean URLs (`/skins` → `/skins.html`) to files in

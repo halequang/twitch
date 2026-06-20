@@ -198,6 +198,29 @@ body::after, body::before,
   content: none !important;
   display: none !important;
 }
+
+.saydis-search {
+  margin: 18px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.saydis-search input {
+  width: 100%;
+  max-width: 420px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  background: rgba(128, 128, 128, 0.08);
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  outline: none;
+}
+.saydis-search input::placeholder { opacity: 0.55; }
+.saydis-search input:focus { border-color: rgba(128, 128, 128, 0.7); }
+.saydis-search-empty { opacity: 0.7; font-size: 14px; }
 </style>
 </head>
 <body class="bgpurple dark skin-poe skin-catalog-square saydis-new saydis-new-4" data-site-card-zoom="" data-site-default-theme="dark" data-site-selection-lock="" data-site-theme="" data-site-totop="" data-site-total-from-sections="" data-site-count-singular="item" data-site-count-plural="items" data-site-auto-count="">
@@ -206,10 +229,15 @@ body::after, body::before,
   <div class="wrapper" id="wrapper">
     <header class="saydis-hero">
       
-      <div class="saydis-hero__copy"><div class="saydis-hero-kicker"><span>POE 2 Twitch Drops</span><span class="saydis-hero-total" data-site-total-count="">25 items</span></div><h1 translate="no" data-preserve-text="POE 2 pack" class="notranslate" data-preserve-watch="">POE 2 pack</h1></div>
+      <div class="saydis-hero__copy"><div class="saydis-hero-kicker"><span>POE 2 Twitch Drops</span><span class="saydis-hero-total" data-site-total-count="">29 items</span></div><h1 translate="no" data-preserve-text="POE 2 pack" class="notranslate" data-preserve-watch="">POE 2 pack</h1></div>
 <nav class="saydis-related"><span>Other products</span><div><a href="/skins" translate="no" data-preserve-text="full" class="notranslate" data-preserve-watch="">full</a><a href="/skins2" translate="no" data-preserve-text="medium" class="notranslate" data-preserve-watch="">medium</a><a href="/skins3" translate="no" data-preserve-text="low" class="notranslate" data-preserve-watch="">low</a><a href="/skinsOLD" translate="no" data-preserve-text="old" class="notranslate" data-preserve-watch="">old</a></div></nav>
     </header>
     <main class="saydis-main">
+
+      <div class="saydis-search">
+        <input type="search" id="itemSearch" placeholder="Search items…" autocomplete="off" aria-label="Search items">
+        <span class="saydis-search-empty" id="searchEmpty" hidden>No items found</span>
+      </div>
 
       <section class="saydis-list-section" id="s01">
         <aside><h2 translate="no" data-preserve-text="Portals" class="notranslate" data-preserve-watch="">Portals</h2><span class="saydis-section-count"><b>2</b><em>items</em></span></aside>
@@ -229,7 +257,7 @@ body::after, body::before,
       </section>
 
       <section class="saydis-list-section" id="s03">
-        <aside><h2 translate="no" data-preserve-text="Attachments" class="notranslate" data-preserve-watch="">Attachments</h2><span class="saydis-section-count"><b>9</b><em>items</em></span></aside>
+        <aside><h2 translate="no" data-preserve-text="Attachments" class="notranslate" data-preserve-watch="">Attachments</h2><span class="saydis-section-count"><b>11</b><em>items</em></span></aside>
         <div class="saydis-list-grid">
           <article class="saydis-card"><div class="saydis-md"><img src="https://cdn.fungamingvn.shop/POE%202%20skins%20-%20Saydis_files/6e6b9800-3a79-4db8-ae2f-b5f72f11270e.png" data-site-zoom-bound="true" style="cursor: zoom-in;"></div><div class="saydis-copy"><strong>Hands of Xesht Back Attachment</strong></div></article>
           <article class="saydis-card"><div class="saydis-md"><img src="https://cdn.fungamingvn.shop/POE%202%20skins%20-%20Saydis_files/9a4c6f77-b965-482a-84e6-fdfe514e26c3.png" data-site-zoom-bound="true" style="cursor: zoom-in;"></div><div class="saydis-copy"><strong>Halo Of The Righteous</strong></div></article>
@@ -239,7 +267,8 @@ body::after, body::before,
           <article class="saydis-card"><div class="saydis-md"><img src="https://cdn.fungamingvn.shop/POE%202%20skins%20-%20Saydis_files/71d02a4e-9d9d-4325-a8d6-4f549710d4bc.png" data-site-zoom-bound="true" style="cursor: zoom-in;"></div><div class="saydis-copy"><strong>Cloak of the Abyssal</strong></div></article>
           <article class="saydis-card"><div class="saydis-md"><img src="https://cdn.fungamingvn.shop/POE%202%20skins%20-%20Saydis_files/72b440c4-9c57-4288-8d34-fec727ebf83c.png" data-site-zoom-bound="true" style="cursor: zoom-in;"></div><div class="saydis-copy"><strong>Helmet of the Abyssal</strong></div></article>
           <article class="saydis-card"><div class="saydis-md"><img src="https://cdn.fungamingvn.shop/POE%202%20skins%20-%20Saydis_files/ae5c52b5-f7f0-40be-a440-9979ec11a9ef.png" data-site-zoom-bound="true" style="cursor: zoom-in;"></div><div class="saydis-copy"><strong>Clam Stash</strong></div></article>
-          <article class="saydis-card"><div class="saydis-md"><img src="https://cdn.fungamingvn.shop/POE%202%20skins%20-%20Saydis_files/6c800ce9-47aa-496c-9c28-f898daaf8da6.png" data-site-zoom-bound="true" style="cursor: zoom-in;"></div><div class="saydis-copy"><strong>Clam Stash</strong></div></article>
+          <article class="saydis-card"><div class="saydis-md"><img src="https://cdn.fungamingvn.shop/Wendigo's%20Crown.png" data-site-zoom-bound="true" style="cursor: zoom-in;"></div><div class="saydis-copy"><strong>Wendigo's Crown</strong></div></article>
+          <article class="saydis-card"><div class="saydis-md"><img src="https://cdn.fungamingvn.shop/MaskoftheVaal.png" data-site-zoom-bound="true" style="cursor: zoom-in;"></div><div class="saydis-copy"><strong>Mask of the Vaal</strong></div></article>
         </div>
       </section>
 
@@ -259,15 +288,46 @@ body::after, body::before,
       </section>
 
       <section class="saydis-list-section" id="s05">
-        <aside><h2 translate="no" data-preserve-text="Other" class="notranslate" data-preserve-watch="">Other</h2><span class="saydis-section-count"><b>2</b><em>items</em></span></aside>
+        <aside><h2 translate="no" data-preserve-text="Other" class="notranslate" data-preserve-watch="">Other</h2><span class="saydis-section-count"><b>4</b><em>items</em></span></aside>
         <div class="saydis-list-grid">
           <article class="saydis-card"><div class="saydis-md"><img src="https://cdn.fungamingvn.shop/POE%202%20skins%20-%20Saydis_files/9ea18772-efa5-4dc6-a1b2-acf9228b91eb.png" data-site-zoom-bound="true" style="cursor: zoom-in;"></div><div class="saydis-copy"><strong>Atziri's Royal Cache</strong></div></article>
           <article class="saydis-card"><div class="saydis-md"><img src="https://cdn.fungamingvn.shop/POE%202%20skins%20-%20Saydis_files/7aecc89e-2526-467d-8e75-107228610941.png" data-site-zoom-bound="true" style="cursor: zoom-in;"></div><div class="saydis-copy"><strong>The Red Queen's Font</strong></div></article>
+          <article class="saydis-card"><div class="saydis-md"><img src="https://cdn.fungamingvn.shop/Arbiter%20Waypoint.png" data-site-zoom-bound="true" style="cursor: zoom-in;"></div><div class="saydis-copy"><strong>Arbiter of Ash Waypoint Decoration</strong></div></article>
+          <article class="saydis-card"><div class="saydis-md"><img src="https://cdn.fungamingvn.shop/Exile's%20Treasurer%20Hideout%20Decoration.png" data-site-zoom-bound="true" style="cursor: zoom-in;"></div><div class="saydis-copy"><strong>Exile's Treasurer Hideout Decoration</strong></div></article>
         </div>
       </section>
 
 </main>
   </div>
 
+<script>
+(function () {
+  var input = document.getElementById('itemSearch');
+  if (!input) return;
+  var empty = document.getElementById('searchEmpty');
+  var sections = [].slice.call(document.querySelectorAll('.saydis-list-section')).map(function (sec) {
+    var cards = [].slice.call(sec.querySelectorAll('.saydis-card')).map(function (card) {
+      var el = card.querySelector('.saydis-copy strong');
+      return { card: card, text: (el ? el.textContent : '').toLowerCase() };
+    });
+    return { sec: sec, cards: cards };
+  });
+  function apply() {
+    var q = input.value.trim().toLowerCase();
+    var total = 0;
+    sections.forEach(function (s) {
+      var visible = 0;
+      s.cards.forEach(function (it) {
+        var show = !q || it.text.indexOf(q) !== -1;
+        it.card.style.display = show ? '' : 'none';
+        if (show) { visible++; total++; }
+      });
+      s.sec.style.display = visible ? '' : 'none';
+    });
+    if (empty) empty.hidden = total !== 0;
+  }
+  input.addEventListener('input', apply);
+})();
+</script>
 
 </body></html>
