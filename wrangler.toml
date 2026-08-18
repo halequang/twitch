@@ -6,6 +6,42 @@ compatibility_date = "2025-05-01"
 directory = "./dist"
 binding = "ASSETS"
 
+# Sign-in for /game. Client IDs are public (they ship in the page); only
+# SESSION_SECRET is a secret: `wrangler secret put SESSION_SECRET`.
+# A provider with an empty client ID is simply not offered on the page.
+# APPLE_CLIENT_ID is the Apple *Services ID*, not the App ID or Team ID.
+[vars]
+GOOGLE_CLIENT_ID = "570711428687-avbounh9j2np09lls6td311u4es44dqf.apps.googleusercontent.com"
+APPLE_CLIENT_ID = ""
+APPLE_REDIRECT_URI = "https://fungamingvn.shop/game"
+# Who may use /admin. Comma-separated: an email, or "provider:sub" for accounts
+# with no email (Apple private relay). FAILS CLOSED — leave it empty and the
+# admin panel is closed to everyone, including you.
+ADMIN_EMAILS = "quanghavhit@gmail.com"
+# Expiry alerts to the shop owner. TELEGRAM_CHAT_ID is your own chat/group id;
+# the bot token is a secret: `wrangler secret put TELEGRAM_BOT_TOKEN`.
+# Leave the id empty and nothing is sent — the pending list still shows in /admin.
+TELEGRAM_CHAT_ID = ""
+
+# Steam account rentals (/game → Thuê tài khoản). Storage for the account pool
+# and orders. Create with:
+#   npx wrangler d1 create fungaming-rentals
+# then paste the returned database_id below.
+# Secrets (never in this file — use `wrangler secret put`):
+#   PAYOS_CLIENT_ID, PAYOS_API_KEY, PAYOS_CHECKSUM_KEY, ACCOUNT_ENC_KEY
+[[d1_databases]]
+# Keep this as DB — worker/index.js and src/lib/rentals.js read env.DB.
+# (`wrangler d1 create` suggests a binding named after the database; ignore it.)
+binding = "DB"
+database_name = "fungaming-rentals"
+database_id = "a68b9377-2188-4bf5-822f-ed7cfbf0c8d6"
+
+# Checks for ended rentals and notifies the owner over Telegram. Expiry is
+# otherwise only noticed when a customer loads /game, so this makes detection
+# independent of traffic.
+[triggers]
+crons = ["*/15 * * * *"]
+
 [[routes]]
 pattern = "fungamingvn.shop/*"
 zone_name = "fungamingvn.shop"

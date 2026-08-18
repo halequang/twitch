@@ -1,3 +1,30 @@
+# Facebook Marketing Post — Vietnamese
+
+## 🔥 Event post — "Return of the Ancestors" (chơi ngày 25/06)
+
+> Dùng cho đợt ra mắt sự kiện. Voucher **ANCESTORS** giảm 20k cho đơn đầu tiên qua Telegram bot.
+> Attachment đề xuất: `marketing/fungaming-hero.png`.
+
+⚔️ **RETURN OF THE ANCESTORS — POE mở sự kiện mới, chơi ngay 25/06!** ⚔️
+
+Mùa mới đã tới, chiến hữu ơi! 🛡 FunGaming VN sẵn sàng đồ nghề cho ngày ra trận:
+
+🔹 **Acc POE tạo sẵn — chỉ 4k/acc!** (acc 1–3 tuần tuổi, dùng để cày Twitch Drops hoặc chơi mới)
+🔹 **Nạp Point POE** — 300P / 600P / 900P / 1000P, gói lớn tặng kèm **Key POE 2**
+🔹 **Twitch Drop Skins** — Full Pack · POE 2 Pack · Legacy · Medium
+🔹 **CapCut Pro 1 năm** — phần mềm bản quyền
+
+🎟 **VOUCHER: ANCESTORS** — giảm **20.000đ** cho đơn hàng đầu tiên, áp dụng khi mua qua Telegram bot.
+
+✅ Bảo hành vĩnh viễn · ✅ Bot tự động giao hàng tức thì 24/7 · ✅ Giá công khai trên web
+
+🤖 Đặt ngay qua bot: **https://t.me/fungamingvnbot**
+🌐 Bảng giá đầy đủ: **https://fungamingvn.shop**
+
+#FunGamingVN #PathOfExile #POE #POE2 #ReturnOfTheAncestors #PoETopUp #TwitchDrops
+
+---
+
 # Facebook Marketing Post — Vietnamese (trust-focused)
 
 ## Recommended attachment

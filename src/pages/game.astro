@@ -1,0 +1,1708 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import SectionTitle from '../components/SectionTitle.astro';
+import { DEFAULT_GAME, GAMES, compactParts, formatVnd } from '../data/rental-plans.js';
+
+// Card faces for the memory game — 8 pairs on a 4×4 board.
+const glyphs = ['⚔', '🗡', '✦', '⚱', '⚜', '🛡', '🔥', '💀'];
+
+// Plans are rendered at build time; live stock comes from /api/rent/plans.
+const rentalGame = GAMES[DEFAULT_GAME];
+---
+
+<Layout
+  advisor={false}
+  title="Game Zone · FunGaming VN"
+  description="Khu vực thành viên FunGaming VN — đăng nhập bằng Google hoặc Apple để chơi mini game và theo dõi kỷ lục của bạn."
+>
+  <Header
+    compact
+    brand="Game Zone"
+    tagline="Member Area · Mini Game · Sign in with Google or Apple"
+    taglineVi="Đăng nhập bằng Google hoặc Apple để vào khu vực thành viên"
+  />
+
+  <!-- Signed out -->
+  <section id="authGate" class="panel" hidden>
+    <SectionTitle
+      title="Login"
+      subtitle="Sign in with Google or Apple to enter the member area"
+    />
+    <div class="gate">
+      <p class="gate-desc">
+        Dùng tài khoản Google hoặc Apple của bạn để vào Game Zone. Chúng tôi chỉ
+        lưu tên, email và ảnh đại diện của bạn.
+      </p>
+      <div class="providers">
+        <div id="gsiButton" class="provider-button"></div>
+        <!-- Apple's SDK renders into this div by id; the data-* attributes are
+             its documented styling hooks. -->
+        <div
+          id="appleid-signin"
+          class="provider-button"
+          data-color="black"
+          data-border="true"
+          data-type="sign in"
+          data-height="40"
+          data-border-radius="20"
+          hidden
+        ></div>
+      </div>
+      <p id="authError" class="gate-error" hidden></p>
+      <p class="gate-note">
+        Bằng việc đăng nhập, bạn đồng ý cho FunGaming VN đọc thông tin hồ sơ cơ bản
+        từ nhà cung cấp bạn chọn.
+      </p>
+    </div>
+  </section>
+
+  <!-- Loading -->
+  <section id="authLoading" class="panel">
+    <p class="loading">⟡ Đang kiểm tra phiên đăng nhập…</p>
+  </section>
+
+  <!-- Signed in -->
+  <section id="member" class="panel" hidden>
+    <div class="account">
+      <img id="userPicture" class="avatar" alt="" width="56" height="56" hidden />
+      <div class="account-meta">
+        <p class="account-name" id="userName"></p>
+        <p class="account-email" id="userEmail"></p>
+      </div>
+      <button id="logoutBtn" type="button" class="btn ghost">Đăng xuất</button>
+    </div>
+    <p id="memberError" class="member-error" hidden></p>
+
+    <!-- The Isle rental, themed to match the shop's own artwork for it. The
+         jungle palette is scoped to this block so the rest of the member area
+         keeps the site's gold theme. -->
+    <section class="isle">
+      <header class="isle-banner">
+        <div class="isle-moon" aria-hidden="true"></div>
+        <svg class="isle-ridge" viewBox="0 0 600 90" preserveAspectRatio="none" aria-hidden="true">
+          <path
+            d="M0 90 L0 62 L38 40 L74 60 L118 30 L160 58 L206 34 L250 62 L300 28 L352 60 L398 36 L444 62 L490 34 L536 58 L572 42 L600 64 L600 90 Z"
+            fill="currentColor"
+          />
+        </svg>
+        <p class="isle-kicker">— {rentalGame.kicker} —</p>
+        <h3 class="isle-title">{rentalGame.name}</h3>
+        <p class="isle-subtitle">🦎 {rentalGame.subtitle} 🦎</p>
+      </header>
+
+      <p class="isle-blurb">{rentalGame.blurb}</p>
+      <p class="isle-tagline">{rentalGame.tagline}</p>
+
+    <div class="rent">
+      <p id="rentNotice" class="rent-notice" hidden></p>
+
+      <!-- payOS embedded checkout. Its SDK injects an iframe into #payosEmbed,
+           sized to 100% height, so the container must set its own height. -->
+      <div id="payosEmbedWrap" class="embed-wrap" hidden>
+        <div class="embed-head">
+          <span class="embed-title">Quét mã QR hoặc chuyển khoản để hoàn tất</span>
+          <button id="payosClose" type="button" class="btn ghost">Đóng</button>
+        </div>
+        <div id="payosEmbed" class="embed-frame"></div>
+        <p class="embed-note">
+          Cửa sổ này sẽ tự đóng sau khi thanh toán thành công. Vui lòng không tắt trình duyệt.
+          Nếu form không hiển thị,
+          <!-- Always-present escape hatch: the embedded frame is cross-origin, so
+               the page cannot tell whether it rendered. -->
+          <a id="payosOpenHosted" href="#" target="_blank" rel="noopener">mở trang thanh toán payOS</a>.
+        </p>
+      </div>
+
+      <!-- Live rentals and unpaid orders are rendered here by the script. -->
+      <div id="rentOrders" class="rent-orders" hidden></div>
+
+      <div class="rent-stock">
+        <span class="stock-label">Tài khoản còn trống</span>
+        <span class="stock-value" id="rentStock">—</span>
+      </div>
+
+      <div class="plans" data-plans={JSON.stringify(rentalGame.plans.map((p) => ({ id: p.id, label: p.label, amount: p.amount })))}>
+        {
+          rentalGame.plans.map((plan) => (
+            <div class={plan.featured ? 'plan featured' : 'plan'}>
+              {plan.badge && <span class="plan-badge">{plan.badge}</span>}
+              <p class="plan-icon" aria-hidden="true">{plan.icon}</p>
+              <p class="plan-kicker">{plan.kicker}</p>
+              <p class="plan-label">{plan.label}</p>
+              <span class="plan-rule" aria-hidden="true"></span>
+              <p class="plan-price">
+                {compactParts(plan.amount).value}<span class="plan-unit">{compactParts(plan.amount).unit}</span>
+                <span class="plan-exact">{formatVnd(plan.amount)}</span>
+              </p>
+              <p class="plan-note">{plan.note}</p>
+              <button type="button" class="btn rent-btn" data-plan={plan.id}>Thuê ngay</button>
+            </div>
+          ))
+        }
+      </div>
+
+      <div class="features">
+        <p class="features-title">⚔️ Đặc điểm dịch vụ</p>
+        <ul class="features-list">
+          {rentalGame.features.map((f) => <li>{f}</li>)}
+        </ul>
+      </div>
+
+      <p class="rent-terms">
+        Thanh toán qua PayOS (chuyển khoản / QR ngân hàng). Tài khoản được cho thuê
+        theo thời gian, vui lòng không đổi mật khẩu hoặc thông tin đăng nhập.
+      </p>
+    </div>
+
+      <p class="isle-motto">{rentalGame.motto}</p>
+    </section>
+
+    <SectionTitle
+      title="Memory of the Exile"
+      subtitle="Lật tìm 8 cặp biểu tượng — ít lượt lật nhất thắng"
+      spaced={true}
+    />
+
+    <div class="game">
+      <div class="scoreboard">
+        <div class="stat"><span class="stat-label">Lượt lật</span><span class="stat-value" id="statMoves">0</span></div>
+        <div class="stat"><span class="stat-label">Cặp</span><span class="stat-value" id="statPairs">0 / 8</span></div>
+        <div class="stat"><span class="stat-label">Thời gian</span><span class="stat-value" id="statTime">0:00</span></div>
+        <div class="stat"><span class="stat-label">Kỷ lục (lượt)</span><span class="stat-value" id="statBest">—</span></div>
+      </div>
+
+      <div id="board" class="board" data-glyphs={JSON.stringify(glyphs)}></div>
+
+      <p id="gameResult" class="game-result" hidden></p>
+      <button id="restartBtn" type="button" class="btn">Chơi lại</button>
+    </div>
+  </section>
+
+  <Footer />
+</Layout>
+
+<style>
+  .panel { margin-bottom: 8px; }
+
+  .loading {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    padding: 48px 0;
+  }
+
+  /* ─── Login gate ───────────────────────────── */
+  .gate {
+    max-width: 440px;
+    margin: 0 auto;
+    padding: 32px 28px;
+    text-align: center;
+    background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 100%);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+
+  .gate-desc {
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--text-dim);
+    margin-bottom: 24px;
+  }
+
+  .providers {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+
+  /* Both SDKs inject their own button markup here; fix the box so the two sit
+     at the same width and the layout does not jump as they load. */
+  .provider-button {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 220px;
+    min-height: 40px;
+  }
+
+  .provider-button[hidden] { display: none; }
+
+  #appleid-signin { cursor: pointer; }
+  #appleid-signin > div { width: 100%; }
+
+  .gate-error {
+    margin-top: 18px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #d98a8a;
+  }
+
+  .gate-note {
+    margin-top: 22px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-muted);
+  }
+
+  /* ─── Account bar ──────────────────────────── */
+  .account {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px 20px;
+    background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 100%);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+
+  .avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: 1px solid var(--gold-dim);
+    object-fit: cover;
+  }
+
+  .account-meta { flex: 1; min-width: 0; }
+
+  .member-error {
+    margin-top: 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #d98a8a;
+    text-align: center;
+  }
+
+  .account-name {
+    font-family: 'Cinzel', serif;
+    font-size: 16px;
+    letter-spacing: 0.06em;
+    color: var(--gold-bright);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .account-email {
+    font-size: 12px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ─── Buttons ──────────────────────────────── */
+  .btn {
+    display: inline-block;
+    padding: 10px 22px;
+    font-family: 'Inter', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--bg-0);
+    background: linear-gradient(180deg, var(--gold-bright) 0%, var(--gold) 100%);
+    border: 1px solid var(--gold-dim);
+    border-radius: 3px;
+    cursor: pointer;
+    transition: filter 0.2s ease, transform 0.2s ease;
+  }
+
+  .btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+
+  .btn.ghost {
+    color: var(--gold);
+    background: transparent;
+  }
+
+  .btn.ghost:hover { color: var(--gold-bright); border-color: var(--gold); }
+
+  /* ─── The Isle rental block ────────────────── */
+  /* Jungle palette, deliberately scoped to this section only. */
+  .isle {
+    --isle-bg: #0c1a10;
+    --isle-bg-2: #101f14;
+    --isle-line: #2c4a2f;
+    --isle-green: #7fae63;
+    --isle-cream: #f3e3b3;
+    --isle-gold: #e8c877;
+
+    margin-top: 56px;
+    background: var(--isle-bg);
+    border: 1px solid var(--isle-line);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .isle-banner {
+    position: relative;
+    padding: 44px 24px 40px;
+    text-align: center;
+    background:
+      radial-gradient(ellipse at 50% 120%, rgba(127, 174, 99, 0.18) 0%, transparent 60%),
+      linear-gradient(180deg, #050d07 0%, #0f2213 100%);
+    border-bottom: 2px solid var(--isle-green);
+    overflow: hidden;
+  }
+
+  .isle-moon {
+    position: absolute;
+    top: 26px;
+    right: 8%;
+    width: 74px;
+    height: 74px;
+    border-radius: 50%;
+    background: #f6f3d8;
+    box-shadow: 0 0 48px 14px rgba(246, 243, 216, 0.28);
+  }
+
+  /* Treeline silhouette along the bottom of the banner. */
+  .isle-ridge {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    width: 100%;
+    height: 62px;
+    color: #050d07;
+    opacity: 0.9;
+  }
+
+  .isle-kicker,
+  .isle-title,
+  .isle-subtitle { position: relative; z-index: 1; }
+
+  .isle-kicker {
+    font-size: 12px;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    color: var(--isle-cream);
+    margin-bottom: 10px;
+  }
+
+  .isle-title {
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    font-size: clamp(34px, 7vw, 64px);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--isle-gold);
+    text-shadow: 0 0 28px rgba(232, 200, 119, 0.45);
+    margin-bottom: 8px;
+  }
+
+  .isle-subtitle {
+    font-size: 13px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: var(--isle-green);
+  }
+
+  .isle-blurb {
+    margin: 28px 24px 4px;
+    font-size: clamp(15px, 2.4vw, 20px);
+    font-style: italic;
+    font-weight: 500;
+    color: var(--isle-cream);
+    text-align: center;
+  }
+
+  .isle-tagline {
+    margin: 0 24px 8px;
+    font-size: 13px;
+    letter-spacing: 0.06em;
+    color: var(--isle-green);
+    text-align: center;
+  }
+
+  .isle-motto {
+    padding: 20px 24px 26px;
+    font-size: 11px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: var(--isle-line);
+    text-align: center;
+  }
+
+  /* ─── Rentals ──────────────────────────────── */
+  .rent { text-align: center; padding: 24px; }
+
+  .rent-notice {
+    margin-bottom: 20px;
+    padding: 12px 16px;
+    font-size: 13px;
+    line-height: 1.6;
+    border: 1px solid var(--gold-dim);
+    border-radius: 3px;
+    background: rgba(200, 164, 74, 0.06);
+    color: var(--text);
+  }
+
+  .rent-notice.error {
+    border-color: #6a3030;
+    background: rgba(122, 42, 42, 0.12);
+    color: #d98a8a;
+  }
+
+  /* Rental cards are built by the script at runtime, so they never receive
+     Astro's scoping attribute — reach them with :global(), same as the game
+     tiles. */
+  .rent-orders { margin-bottom: 24px; }
+
+  .rent-orders :global(.rental) {
+    text-align: left;
+    padding: 18px 20px;
+    margin-bottom: 12px;
+    background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 100%);
+    border: 1px solid var(--gold-dim);
+    border-radius: 4px;
+  }
+
+  .rent-orders :global(.rental.pending) { border-color: var(--line); }
+
+  .rent-orders :global(.rental-head) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .rent-orders :global(.rental-title) {
+    font-family: 'Cinzel', serif;
+    font-size: 15px;
+    color: var(--gold-bright);
+    letter-spacing: 0.05em;
+  }
+
+  .rent-orders :global(.rental-status) {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    padding: 2px 8px;
+  }
+
+  .rent-orders :global(.rental-countdown) {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--gold);
+  }
+
+  .rent-orders :global(.creds) {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 10px 14px;
+    align-items: center;
+    padding: 14px;
+    background: var(--bg-0);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+  }
+
+  .rent-orders :global(.creds dt) {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .rent-orders :global(.creds dd) {
+    font-family: 'Courier New', monospace;
+    font-size: 15px;
+    color: var(--text);
+    word-break: break-all;
+  }
+
+  .rent-orders :global(.copy-btn) {
+    padding: 5px 12px;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--gold);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .rent-orders :global(.copy-btn:hover) {
+    border-color: var(--gold-dim);
+    color: var(--gold-bright);
+  }
+
+  .rent-orders :global(.extend) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+  }
+
+  .rent-orders :global(.extend-label) {
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-right: 4px;
+  }
+
+  .rent-orders :global(.extend-btn) {
+    padding: 7px 14px;
+    font-family: 'Inter', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--gold);
+    background: transparent;
+    border: 1px solid var(--gold-dim);
+    border-radius: 3px;
+    cursor: pointer;
+    transition: color 0.2s ease, border-color 0.2s ease;
+  }
+
+  .rent-orders :global(.extend-btn:hover) {
+    color: var(--gold-bright);
+    border-color: var(--gold);
+  }
+
+  .rent-orders :global(.extend-btn:disabled) { opacity: 0.5; cursor: not-allowed; }
+
+  .rent-orders :global(.rental-note) {
+    margin-top: 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-dim);
+  }
+
+  /* The "continue payment" link is created by the script too. */
+  .rent-orders :global(.btn) {
+    display: inline-block;
+    padding: 10px 22px;
+    font-family: 'Inter', sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    text-decoration: none;
+    color: var(--bg-0);
+    background: linear-gradient(180deg, var(--gold-bright) 0%, var(--gold) 100%);
+    border: 1px solid var(--gold-dim);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  /* ─── payOS embedded checkout ──────────────── */
+  .embed-wrap {
+    margin-bottom: 24px;
+    padding: 16px;
+    background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 100%);
+    border: 1px solid var(--gold-dim);
+    border-radius: 4px;
+  }
+
+  .embed-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .embed-title {
+    flex: 1;
+    text-align: left;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  /* The payOS iframe is height:100%, so the height must live here. */
+  .embed-frame {
+    height: 620px;
+    background: #fff;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  /* The iframe is created by the script, so it carries no scoping attribute. */
+  .embed-frame :global(iframe) {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    display: block;
+  }
+
+  .embed-note {
+    margin-top: 10px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-muted);
+  }
+
+  .embed-note a {
+    color: var(--gold);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--gold-dim);
+  }
+
+  .embed-note a:hover { color: var(--gold-bright); }
+
+  @media (max-width: 520px) {
+    .embed-frame { height: 680px; }
+    .embed-head { flex-wrap: wrap; }
+  }
+
+  .rent-stock {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 24px;
+    padding: 8px 18px;
+    border: 1px solid var(--isle-line);
+    border-radius: 999px;
+    background: var(--isle-bg-2);
+  }
+
+  .stock-label {
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--isle-green);
+  }
+
+  .stock-value {
+    font-family: 'Cinzel', serif;
+    font-size: 17px;
+    color: var(--isle-cream);
+  }
+
+  .plans {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 20px;
+    margin-bottom: 28px;
+  }
+
+  .plan {
+    position: relative;
+    padding: 34px 22px 26px;
+    background: linear-gradient(180deg, #12251700 0%, rgba(127, 174, 99, 0.07) 100%);
+    border: 1px solid var(--isle-line);
+    border-radius: 6px;
+    transition: border-color 0.25s ease, transform 0.25s ease;
+  }
+
+  .plan:hover { border-color: var(--isle-green); transform: translateY(-2px); }
+
+  .plan.featured {
+    border-color: var(--isle-gold);
+    box-shadow: 0 0 26px rgba(232, 200, 119, 0.12);
+  }
+
+  .plan-badge {
+    position: absolute;
+    top: -12px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 4px 14px;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: #2a1e05;
+    background: linear-gradient(180deg, var(--isle-gold) 0%, #c9a44f 100%);
+    border-radius: 999px;
+  }
+
+  .plan-icon { font-size: 34px; line-height: 1; margin-bottom: 12px; }
+
+  .plan-kicker {
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--isle-green);
+    margin-bottom: 8px;
+  }
+
+  .plan.featured .plan-kicker { color: var(--isle-gold); }
+
+  .plan-label {
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    font-size: clamp(24px, 4vw, 34px);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--isle-cream);
+    margin-bottom: 14px;
+  }
+
+  .plan-rule {
+    display: block;
+    width: 72%;
+    height: 1px;
+    margin: 0 auto 16px;
+    background: linear-gradient(to right, transparent, var(--isle-line), transparent);
+  }
+
+  .plan-price {
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    font-size: clamp(32px, 5.5vw, 46px);
+    line-height: 1;
+    color: var(--isle-cream);
+    margin-bottom: 8px;
+  }
+
+  /* Cinzel has no lowercase, so the unit is set in Inter to stay a real "k". */
+  .plan-unit {
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    font-size: 0.62em;
+    letter-spacing: 0;
+  }
+
+  .plan-exact {
+    display: block;
+    margin-top: 6px;
+    font-family: 'Inter', sans-serif;
+    font-weight: 400;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    color: var(--isle-green);
+  }
+
+  .plan-note {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--isle-green);
+    margin-bottom: 20px;
+  }
+
+  .plan.featured .plan-note { color: var(--isle-gold); }
+
+  /* ─── Feature list ─────────────────────────── */
+  .features {
+    margin-bottom: 24px;
+    padding: 20px 22px;
+    text-align: left;
+    background: var(--isle-bg-2);
+    border-left: 3px solid var(--isle-green);
+    border-radius: 4px;
+  }
+
+  .features-title {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--isle-gold);
+    margin-bottom: 16px;
+  }
+
+  /* Two columns, matching the artwork. The feature array is ordered so each
+     row pairs correctly left-to-right. */
+  .features-list {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px 28px;
+    list-style: none;
+  }
+
+  @media (max-width: 640px) {
+    .features-list { grid-template-columns: 1fr; }
+  }
+
+  .features-list li {
+    position: relative;
+    padding-left: 26px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--isle-cream);
+  }
+
+  .features-list li::before {
+    content: "✅";
+    position: absolute;
+    left: 0;
+    font-size: 12px;
+  }
+
+  .rent-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    transform: none;
+    filter: none;
+  }
+
+  .rent-terms {
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--isle-green);
+    opacity: 0.75;
+  }
+
+  /* Rent buttons pick up the jungle theme rather than the site gold. */
+  .rent-btn {
+    color: #0c1a10;
+    background: linear-gradient(180deg, var(--isle-cream) 0%, var(--isle-gold) 100%);
+    border-color: var(--isle-gold);
+  }
+
+  @media (max-width: 520px) {
+    .rent-orders :global(.creds) { grid-template-columns: 1fr; }
+    .rent-orders :global(.creds dd) { margin-bottom: 4px; }
+  }
+
+  /* ─── Game ─────────────────────────────────── */
+  .game { text-align: center; }
+
+  .scoreboard {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .stat {
+    padding: 12px 8px;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+  }
+
+  .stat-label {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+  }
+
+  .stat-value {
+    display: block;
+    font-family: 'Cinzel', serif;
+    font-size: 18px;
+    color: var(--gold-bright);
+  }
+
+  .board {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    max-width: 460px;
+    margin: 0 auto 24px;
+  }
+
+  /* Tiles are built by the script at runtime, so they never get Astro's scoping
+     attribute — reach them through the board with :global(). */
+  .board :global(.tile) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    aspect-ratio: 1;
+    font-size: clamp(24px, 7vw, 36px);
+    line-height: 1;
+    color: var(--gold-bright);
+    background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 100%);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .board :global(.tile:hover:not(.revealed):not(.matched)) {
+    border-color: var(--gold-dim);
+    transform: translateY(-2px);
+  }
+
+  .board :global(.face) { opacity: 0; transition: opacity 0.15s ease; }
+  .board :global(.tile.revealed .face),
+  .board :global(.tile.matched .face) { opacity: 1; }
+
+  .board :global(.tile.revealed) { border-color: var(--gold-dim); }
+
+  .board :global(.tile.matched) {
+    border-color: var(--gold);
+    box-shadow: 0 0 18px rgba(200, 164, 74, 0.18);
+    cursor: default;
+  }
+
+  .board :global(.tile.matched .face) { opacity: 0.45; }
+
+  .game-result {
+    margin-bottom: 20px;
+    font-family: 'Cinzel', serif;
+    font-size: 16px;
+    color: var(--gold-bright);
+  }
+
+  @media (max-width: 520px) {
+    .scoreboard { grid-template-columns: repeat(2, 1fr); }
+    .account { flex-wrap: wrap; }
+  }
+</style>
+
+<script>
+  const el = (id) => document.getElementById(id);
+  const loading = el('authLoading');
+  const gate = el('authGate');
+  const member = el('member');
+  const errorBox = el('authError');
+
+  function showError(message) {
+    errorBox.textContent = message;
+    errorBox.hidden = false;
+  }
+
+  /* ─── Session ────────────────────────────────── */
+
+  const PROVIDER_LABELS = { google: 'Google', apple: 'Apple' };
+
+  function showSignedIn(user) {
+    el('userName').textContent = user.name || 'Exile';
+    const label = PROVIDER_LABELS[user.provider];
+    el('userEmail').textContent = [user.email, label && 'qua ' + label]
+      .filter(Boolean)
+      .join(' · ');
+    const pic = el('userPicture');
+    if (user.picture) {
+      // Apple never sends an avatar, so the element simply stays hidden.
+      pic.src = user.picture;
+      pic.alt = user.name || '';
+      pic.referrerPolicy = 'no-referrer';
+      pic.hidden = false;
+    }
+    loading.hidden = true;
+    gate.hidden = true;
+    member.hidden = false;
+    // Namespace the score by provider — the same `sub` from two providers is
+    // two different people.
+    startGame((user.provider ? user.provider + ':' : '') + user.sub);
+    initRentals();
+  }
+
+  function showSignedOut() {
+    loading.hidden = true;
+    member.hidden = true;
+    gate.hidden = false;
+    initSignIn();
+  }
+
+  async function checkSession() {
+    try {
+      const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+      const data = await res.json();
+      if (data.user) return showSignedIn(data.user);
+    } catch {
+      /* fall through to the login gate */
+    }
+    showSignedOut();
+  }
+
+  el('logoutBtn').addEventListener('click', async () => {
+    const failed = el('memberError');
+    failed.hidden = true;
+    try {
+      // Reloading on a failed logout would silently drop the user back into the
+      // member area still signed in — say so instead.
+      const res = await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+      if (!res.ok) throw new Error(String(res.status));
+    } catch (err) {
+      failed.textContent = 'Đăng xuất thất bại (' + err.message + '). Vui lòng thử lại.';
+      failed.hidden = false;
+      return;
+    }
+    if (window.google?.accounts?.id) window.google.accounts.id.disableAutoSelect();
+    window.location.reload();
+  });
+
+  /* ─── Sign-in providers ──────────────────────── */
+
+  let providersReady = false;
+
+  function loadScript(src, isLoaded) {
+    return new Promise((resolve, reject) => {
+      if (isLoaded()) return resolve();
+      const script = document.createElement('script');
+      script.src = src;
+      script.async = true;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('script_failed'));
+      document.head.appendChild(script);
+    });
+  }
+
+  // Both providers end up here: an ID token goes to the server, the server
+  // verifies it and sets the session cookie, and we get the user back.
+  async function submitToken(provider, payload) {
+    try {
+      const res = await fetch('/api/auth/' + provider, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.user) {
+        return showError('Đăng nhập thất bại. Vui lòng thử lại. (' + (data.error || res.status) + ')');
+      }
+      showSignedIn(data.user);
+    } catch {
+      showError('Không kết nối được máy chủ. Vui lòng thử lại.');
+    }
+  }
+
+  async function initGoogle(config) {
+    await loadScript('https://accounts.google.com/gsi/client', () => !!window.google?.accounts?.id);
+    window.google.accounts.id.initialize({
+      client_id: config.clientId,
+      callback: (response) => submitToken('google', { credential: response.credential }),
+      auto_select: false,
+      cancel_on_tap_outside: true,
+    });
+    window.google.accounts.id.renderButton(el('gsiButton'), {
+      theme: 'filled_black',
+      size: 'large',
+      shape: 'pill',
+      text: 'signin_with',
+      width: 220,
+      locale: 'vi',
+    });
+  }
+
+  async function initApple(config) {
+    await loadScript(
+      'https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js',
+      () => !!window.AppleID?.auth
+    );
+
+    // The SDK owns the click on its rendered button, so the result arrives as a
+    // document event rather than a promise. `user` (the display name) is only
+    // present on the very first authorization — Apple never sends it again.
+    document.addEventListener('AppleIDSignInOnSuccess', (event) => {
+      const detail = event.detail || {};
+      const idToken = detail.authorization?.id_token ?? detail.id_token;
+      if (!idToken) return showError('Apple không trả về mã đăng nhập. Vui lòng thử lại.');
+      submitToken('apple', { id_token: idToken, user: detail.user ?? null });
+    });
+
+    document.addEventListener('AppleIDSignInOnFailure', (event) => {
+      const reason = event.detail?.error;
+      // Closing the popup is a normal cancel, not an error worth showing.
+      if (reason === 'popup_closed_by_user' || reason === 'user_cancelled_authorize') return;
+      showError('Đăng nhập Apple thất bại' + (reason ? ' (' + reason + ')' : '') + '. Vui lòng thử lại.');
+    });
+
+    window.AppleID.auth.init({
+      clientId: config.clientId,
+      scope: 'name email',
+      redirectURI: config.redirectUri,
+      usePopup: true,
+    });
+    const appleButton = el('appleid-signin');
+    appleButton.hidden = false;
+    window.AppleID.auth.renderButton();
+  }
+
+  async function initSignIn() {
+    if (providersReady) return;
+    providersReady = true;
+    try {
+      const res = await fetch('/api/auth/config', { credentials: 'same-origin' });
+      const config = await res.json();
+      if (!config.google && !config.apple) {
+        return showError(
+          'Đăng nhập chưa được cấu hình (thiếu GOOGLE_CLIENT_ID và APPLE_CLIENT_ID).'
+        );
+      }
+
+      // One provider failing to load must not take the other down with it.
+      const tasks = [];
+      if (config.google) tasks.push(initGoogle(config.google));
+      if (config.apple) tasks.push(initApple(config.apple));
+      const results = await Promise.allSettled(tasks);
+      if (results.every((r) => r.status === 'rejected')) {
+        providersReady = false;
+        showError('Không tải được nút đăng nhập. Kiểm tra kết nối mạng rồi thử lại.');
+      }
+    } catch {
+      providersReady = false;
+      showError('Không tải được cấu hình đăng nhập. Vui lòng thử lại.');
+    }
+  }
+
+  /* ─── Steam account rentals ──────────────────── */
+
+  const RENT_STATUS = {
+    pending: 'Chờ thanh toán',
+    active: 'Đang thuê',
+    expired: 'Đã hết hạn',
+    cancelled: 'Đã huỷ',
+    payment_expired: 'Link thanh toán hết hạn',
+    extended: 'Đã gia hạn',
+    awaiting_stock: 'Đã thanh toán — hết tài khoản',
+    error: 'Lỗi đọc tài khoản',
+  };
+
+  let countdownTimer = null;
+
+  function rentNotice(message, isError) {
+    const box = el('rentNotice');
+    box.textContent = message;
+    box.classList.toggle('error', Boolean(isError));
+    box.hidden = false;
+  }
+
+  function formatRemaining(seconds) {
+    if (seconds <= 0) return 'hết hạn';
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (d > 0) return d + ' ngày ' + h + ' giờ';
+    if (h > 0) return h + ' giờ ' + String(m).padStart(2, '0') + ' phút';
+    return m + ':' + String(s).padStart(2, '0');
+  }
+
+  function copyButton(value) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy-btn';
+    btn.textContent = 'Chép';
+    btn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(value);
+        btn.textContent = 'Đã chép';
+        setTimeout(() => (btn.textContent = 'Chép'), 1500);
+      } catch {
+        btn.textContent = 'Lỗi';
+      }
+    });
+    return btn;
+  }
+
+  function credentialRow(parent, label, value) {
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const dd = document.createElement('dd');
+    dd.textContent = value;
+    parent.append(dt, dd, copyButton(value));
+  }
+
+  function renderOrder(order) {
+    const box = document.createElement('div');
+    box.className = 'rental' + (order.status === 'active' ? '' : ' pending');
+
+    const head = document.createElement('div');
+    head.className = 'rental-head';
+    const title = document.createElement('span');
+    title.className = 'rental-title';
+    title.textContent = 'The Isle · ' + order.hours + ' giờ';
+    const status = document.createElement('span');
+    status.className = 'rental-status';
+    status.textContent = RENT_STATUS[order.status] || order.status;
+    head.append(title, status);
+
+    if (order.status === 'active' && order.expiresAt) {
+      const countdown = document.createElement('span');
+      countdown.className = 'rental-countdown';
+      countdown.dataset.expiresAt = String(order.expiresAt);
+      head.appendChild(countdown);
+    }
+    box.appendChild(head);
+
+    if (order.credentials) {
+      const creds = document.createElement('dl');
+      creds.className = 'creds';
+      credentialRow(creds, 'Tài khoản', order.credentials.login);
+      credentialRow(creds, 'Mật khẩu', order.credentials.password);
+      // Only present when RENTAL_RELEASE_EMAIL is switched on server-side.
+      if (order.credentials.email) credentialRow(creds, 'Email', order.credentials.email);
+      if (order.credentials.emailPassword) {
+        credentialRow(creds, 'Mật khẩu email', order.credentials.emailPassword);
+      }
+      box.appendChild(creds);
+
+      const note = document.createElement('p');
+      note.className = 'rental-note';
+      note.textContent =
+        order.credentials.note ||
+        'Đăng nhập Steam, bật chế độ offline nếu được yêu cầu. Vui lòng không đổi mật khẩu.';
+      box.appendChild(note);
+      box.appendChild(extendControls(order));
+    } else if (order.status === 'pending' && order.checkoutUrl) {
+      // Resume an unfinished order in the same embedded form, not by navigating
+      // off to the hosted page.
+      const resume = document.createElement('button');
+      resume.type = 'button';
+      resume.className = 'btn';
+      resume.textContent = 'Tiếp tục thanh toán';
+      resume.addEventListener('click', async () => {
+        try {
+          await openEmbeddedCheckout(order.checkoutUrl, order.orderCode);
+        } catch {
+          window.location.href = order.checkoutUrl;
+        }
+      });
+      // Styling for the embed note link lives with the rest of the rent styles.
+      box.appendChild(resume);
+    } else if (order.status === 'awaiting_stock') {
+      const note = document.createElement('p');
+      note.className = 'rental-note';
+      note.textContent =
+        'Đơn đã thanh toán nhưng tạm hết tài khoản trống. Vui lòng liên hệ shop để được xếp tài khoản hoặc hoàn tiền — mã đơn ' +
+        order.orderCode + '.';
+      box.appendChild(note);
+    }
+    return box;
+  }
+
+  const RENT_PLANS = JSON.parse(document.querySelector('.plans').dataset.plans);
+
+  const compact = (amount) => (amount % 1000 === 0 ? amount / 1000 + 'k' : amount + '₫');
+
+  /**
+   * "Add more time" buttons for a live rental. Extending keeps the SAME Steam
+   * account, so it works even when the pool is empty — no stock check needed.
+   */
+  function extendControls(order) {
+    const wrap = document.createElement('div');
+    wrap.className = 'extend';
+
+    const label = document.createElement('span');
+    label.className = 'extend-label';
+    label.textContent = 'Gia hạn thêm:';
+    wrap.appendChild(label);
+
+    for (const plan of RENT_PLANS) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'extend-btn';
+      btn.textContent = plan.label + ' · ' + compact(plan.amount);
+      btn.addEventListener('click', () => startCheckout(plan.id, btn, order.orderCode));
+      wrap.appendChild(btn);
+    }
+    return wrap;
+  }
+
+  function startCountdowns() {
+    clearInterval(countdownTimer);
+    const tick = () => {
+      const nodes = document.querySelectorAll('[data-expires-at]');
+      if (!nodes.length) return clearInterval(countdownTimer);
+      const nowSec = Math.floor(Date.now() / 1000);
+      for (const node of nodes) {
+        const left = Number(node.dataset.expiresAt) - nowSec;
+        node.textContent = 'Còn ' + formatRemaining(left);
+        // The server owns expiry; refresh once it lapses so the pool is freed.
+        if (left <= 0) loadRentals();
+      }
+    };
+    tick();
+    countdownTimer = setInterval(tick, 1000);
+  }
+
+  // Statuses that are done moving — polling can stop once an order reaches one.
+  const TERMINAL = new Set(['active', 'expired', 'cancelled', 'payment_expired', 'awaiting_stock', 'error', 'extended']);
+
+  async function loadRentals() {
+    const list = el('rentOrders');
+    try {
+      const res = await fetch('/api/rent/orders', { credentials: 'same-origin' });
+      if (res.status === 503) {
+        const info = await res.json().catch(() => ({}));
+        setPlansEnabled(false);
+        rentNotice(info.hint || 'Tính năng thuê tài khoản chưa được cấu hình.', true);
+        return null;
+      }
+      if (!res.ok) throw new Error(String(res.status));
+      const { orders } = await res.json();
+
+      list.textContent = '';
+      // Finished and abandoned orders are noise once they are done; the notice
+      // above carries the outcome instead.
+      const relevant = (orders || []).filter(
+        (o) => !['expired', 'cancelled', 'payment_expired', 'extended'].includes(o.status)
+      );
+      for (const order of relevant) list.appendChild(renderOrder(order));
+      // While the payment form is open, the same order also showing a
+      // "Tiếp tục thanh toán" button below it is just confusing.
+      list.hidden = relevant.length === 0 || !el('payosEmbedWrap').hidden;
+      startCountdowns();
+      return orders || [];
+    } catch {
+      rentNotice('Không tải được đơn thuê. Vui lòng tải lại trang.', true);
+      return null;
+    }
+  }
+
+  /**
+   * After returning from payOS, the payment may still be settling. Poll until
+   * the order reaches a terminal state rather than showing a single, probably
+   * premature, verdict. The server re-checks with payOS on every call, so this
+   * also covers a webhook that never arrived.
+   */
+  async function awaitPaymentOutcome(orderCode, deadlineMs = 45000, token = null) {
+    const started = Date.now();
+    let delay = 1500;
+
+    while (true) {
+      if (token?.cancelled) return;
+      const orders = await loadRentals();
+      if (orders === null) return; // load failed; its own notice is showing
+      if (token?.cancelled) return; // closed while the request was in flight
+
+      const order = orders.find((o) => String(o.orderCode) === String(orderCode));
+
+      if (!order) {
+        // No such order for this account — e.g. checkout never completed.
+        return rentNotice('Không tìm thấy đơn thanh toán này.', true);
+      }
+
+      if (TERMINAL.has(order.status)) return announceOutcome(order);
+
+      if (Date.now() - started > deadlineMs) {
+        return rentNotice(
+          'Thanh toán chưa được xác nhận. Nếu bạn đã chuyển khoản, tài khoản sẽ hiện ra sau ít phút — hãy tải lại trang. Mã đơn ' +
+            orderCode + '.',
+          true
+        );
+      }
+
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay * 1.4, 5000); // back off; most settle in seconds
+    }
+  }
+
+  function announceOutcome(order) {
+    switch (order.status) {
+      case 'active':
+        return rentNotice('Thanh toán thành công — tài khoản của bạn đã sẵn sàng bên dưới.', false);
+      case 'extended':
+        return rentNotice('Gia hạn thành công — thời hạn thuê đã được cộng thêm.', false);
+      case 'awaiting_stock':
+        return rentNotice(
+          'Đã nhận thanh toán nhưng hiện hết tài khoản trống. Vui lòng liên hệ shop kèm mã đơn ' +
+            order.orderCode + ' để được xếp tài khoản hoặc hoàn tiền.',
+          true
+        );
+      case 'cancelled':
+        return rentNotice('Bạn đã huỷ thanh toán. Chưa có khoản nào bị trừ.', false);
+      case 'payment_expired':
+        return rentNotice('Link thanh toán đã hết hạn. Vui lòng tạo đơn mới.', true);
+      case 'error':
+        // The rental is paid and valid — only the credential read failed, so
+        // make clear the money is not lost.
+        return rentNotice(
+          'Đã thanh toán thành công nhưng chưa lấy được thông tin tài khoản. ' +
+            'Vui lòng liên hệ shop kèm mã đơn ' + order.orderCode + ' để nhận tài khoản ngay.',
+          true
+        );
+      default:
+        return rentNotice('Trạng thái đơn: ' + (RENT_STATUS[order.status] || order.status), false);
+    }
+  }
+
+  function setPlansEnabled(enabled) {
+    for (const btn of document.querySelectorAll('.rent-btn')) btn.disabled = !enabled;
+  }
+
+  async function loadStock() {
+    try {
+      const res = await fetch('/api/rent/plans', { credentials: 'same-origin' });
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.json();
+      el('rentStock').textContent = String(data.available);
+      setPlansEnabled(data.available > 0);
+      if (data.available === 0) rentNotice('Hiện đã hết tài khoản trống. Vui lòng quay lại sau.', false);
+    } catch {
+      el('rentStock').textContent = '—';
+      setPlansEnabled(false);
+    }
+  }
+
+  /* ─── payOS embedded checkout ────────────────── */
+
+  // payOS is framed directly rather than through their JS SDK: the SDK rewrites
+  // the URL to /embedded/<id>, which this merchant account rejects with an error
+  // page that posts no message back — so its callbacks never fire. The compact
+  // ?embedded=true view frames fine, and the server is the authority on whether
+  // a payment landed anyway, so nothing of value is lost.
+  let embedPoll = null;
+
+  function embeddedSrc(checkoutUrl) {
+    return checkoutUrl + (checkoutUrl.includes('?') ? '&' : '?') + 'embedded=true';
+  }
+
+  function closeEmbed() {
+    if (embedPoll) embedPoll.cancelled = true;
+    embedPoll = null;
+    el('payosEmbed').textContent = '';
+    el('payosEmbedWrap').hidden = true;
+  }
+
+  async function openEmbeddedCheckout(checkoutUrl, orderCode) {
+    closeEmbed();
+
+    const wrap = el('payosEmbedWrap');
+    wrap.hidden = false;
+    el('payosOpenHosted').href = checkoutUrl;
+
+    const frame = document.createElement('iframe');
+    frame.src = embeddedSrc(checkoutUrl);
+    frame.title = 'Thanh toán payOS';
+    frame.allow = 'clipboard-write';
+    frame.setAttribute('loading', 'eager');
+    el('payosEmbed').appendChild(frame);
+    wrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    // A bank transfer can take minutes, so poll far longer than the return-URL
+    // flow does — the payment link itself expires after 15.
+    const token = { cancelled: false };
+    embedPoll = token;
+    await awaitPaymentOutcome(orderCode, 12 * 60 * 1000, token);
+    if (!token.cancelled) {
+      closeEmbed();
+      loadStock();
+    }
+  }
+
+  el('payosClose').addEventListener('click', () => {
+    closeEmbed();
+    // The order stays pending — it reappears in the list so it can be resumed.
+    loadRentals();
+  });
+
+  async function startCheckout(planId, button, extendOrderCode = null) {
+    button.disabled = true;
+    try {
+      const res = await fetch('/api/rent/checkout', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(extendOrderCode ? { planId, extendOrderCode } : { planId }),
+      });
+      const data = await res.json();
+      if (res.ok && data.checkoutUrl) {
+        // The server probes whether payOS will actually serve the in-page form
+        // for this merchant; when it will not, go straight to the hosted page
+        // rather than showing a dead iframe.
+        if (data.embedded === false) {
+          window.location.href = data.checkoutUrl;
+          return;
+        }
+        try {
+          await openEmbeddedCheckout(data.checkoutUrl, data.orderCode);
+        } catch {
+          // payOS's script blocked or unreachable — fall back to their hosted
+          // page rather than stranding a customer with a created order.
+          window.location.href = data.checkoutUrl;
+        }
+        return;
+      }
+      if (data.error === 'not_extendable' || data.error === 'unknown_order') {
+        rentNotice('Không gia hạn được đơn này (đơn đã kết thúc). Vui lòng thuê gói mới.', true);
+        await loadRentals();
+      } else if (data.error === 'out_of_stock') {
+        rentNotice('Vừa hết tài khoản trống. Vui lòng quay lại sau.', true);
+        await loadStock();
+      } else if (data.error === 'unauthorized') {
+        rentNotice('Phiên đăng nhập đã hết. Vui lòng đăng nhập lại.', true);
+      } else if (data.merchantConfig) {
+        // Shop-side problem (e.g. payOS code 214, channel paused). The customer
+        // can do nothing about it, so keep the detail in the console for us.
+        console.error('payOS merchant config error:', data.reason);
+        rentNotice(
+          'Cổng thanh toán đang tạm ngưng. Vui lòng liên hệ shop qua Zalo/Facebook để đặt đơn' +
+            (data.payosCode ? ' (mã ' + data.payosCode + ')' : '') + '.',
+          true
+        );
+      } else {
+        // `reason` carries payOS's own message — showing it is the difference
+        // between "it broke" and knowing which setting to fix.
+        console.error('checkout failed:', data.reason);
+        rentNotice(
+          'Không tạo được đơn thanh toán: ' + (data.reason || data.error || res.status),
+          true
+        );
+      }
+    } catch {
+      rentNotice('Không kết nối được máy chủ thanh toán.', true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function initRentals() {
+    for (const btn of document.querySelectorAll('.rent-btn')) {
+      btn.addEventListener('click', () => startCheckout(btn.dataset.plan, btn));
+    }
+
+    // Coming back from payOS. It appends its own params (code, id, status,
+    // cancel, orderCode) alongside the ones we put in the return URL. They are
+    // only used to decide what to *say* — the outcome itself always comes from
+    // the server re-checking with payOS, since anyone can edit a query string.
+    const params = new URLSearchParams(window.location.search);
+    const marker = params.get('rent');
+    const orderCode = params.get('orderCode');
+    const cancelled = params.get('cancel') === 'true' || params.get('status') === 'CANCELLED';
+
+    if (params.has('rent')) {
+      // Clear the query so a refresh does not replay the outcome.
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
+    loadStock();
+
+    if (marker && orderCode) {
+      rentNotice(cancelled ? 'Đang kiểm tra đơn…' : 'Đang xác nhận thanh toán…', false);
+      awaitPaymentOutcome(orderCode).then(loadStock);
+    } else {
+      loadRentals();
+    }
+  }
+
+  /* ─── Memory game ────────────────────────────── */
+
+  const board = el('board');
+  const glyphs = JSON.parse(board.dataset.glyphs);
+
+  let deck = [];
+  let firstTile = null;
+  let locked = false;
+  let moves = 0;
+  let pairs = 0;
+  let startedAt = 0;
+  let timerId = null;
+  let bestKey = 'fg-game-best';
+
+  function shuffle(items) {
+    const out = items.slice();
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  }
+
+  function formatTime(seconds) {
+    return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
+  }
+
+  function elapsed() {
+    return startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0;
+  }
+
+  function renderBest() {
+    const raw = localStorage.getItem(bestKey);
+    el('statBest').textContent = raw || '—';
+  }
+
+  function tick() {
+    el('statTime').textContent = formatTime(elapsed());
+  }
+
+  function onTileClick(tile) {
+    if (locked || tile.classList.contains('matched') || tile === firstTile) return;
+    if (!startedAt) {
+      startedAt = Date.now();
+      timerId = setInterval(tick, 1000);
+    }
+
+    tile.classList.add('revealed');
+    tile.setAttribute('aria-pressed', 'true');
+
+    if (!firstTile) {
+      firstTile = tile;
+      return;
+    }
+
+    moves += 1;
+    el('statMoves').textContent = String(moves);
+
+    const a = firstTile;
+    const b = tile;
+    firstTile = null;
+
+    if (a.dataset.glyph === b.dataset.glyph) {
+      a.classList.add('matched');
+      b.classList.add('matched');
+      pairs += 1;
+      el('statPairs').textContent = pairs + ' / ' + glyphs.length;
+      if (pairs === glyphs.length) finish();
+      return;
+    }
+
+    locked = true;
+    setTimeout(() => {
+      for (const t of [a, b]) {
+        t.classList.remove('revealed');
+        t.setAttribute('aria-pressed', 'false');
+      }
+      locked = false;
+    }, 700);
+  }
+
+  function finish() {
+    clearInterval(timerId);
+    timerId = null;
+    const best = Number(localStorage.getItem(bestKey)) || Infinity;
+    const isBest = moves < best;
+    if (isBest) localStorage.setItem(bestKey, String(moves));
+    renderBest();
+    const result = el('gameResult');
+    result.textContent = isBest
+      ? '⚜ Kỷ lục mới! ' + moves + ' lượt trong ' + formatTime(elapsed())
+      : '✦ Hoàn thành với ' + moves + ' lượt trong ' + formatTime(elapsed());
+    result.hidden = false;
+  }
+
+  function startGame(userId) {
+    // Scope the personal best to the signed-in account.
+    if (userId) bestKey = 'fg-game-best:' + userId;
+
+    clearInterval(timerId);
+    timerId = null;
+    firstTile = null;
+    locked = false;
+    moves = 0;
+    pairs = 0;
+    startedAt = 0;
+    deck = shuffle(glyphs.concat(glyphs));
+
+    el('statMoves').textContent = '0';
+    el('statPairs').textContent = '0 / ' + glyphs.length;
+    el('statTime').textContent = '0:00';
+    el('gameResult').hidden = true;
+    renderBest();
+
+    board.textContent = '';
+    for (const glyph of deck) {
+      const tile = document.createElement('button');
+      tile.type = 'button';
+      tile.className = 'tile';
+      tile.dataset.glyph = glyph;
+      tile.setAttribute('aria-pressed', 'false');
+      tile.setAttribute('aria-label', 'Lá bài úp');
+      const face = document.createElement('span');
+      face.className = 'face';
+      face.textContent = glyph;
+      tile.appendChild(face);
+      tile.addEventListener('click', () => onTileClick(tile));
+      board.appendChild(tile);
+    }
+  }
+
+  el('restartBtn').addEventListener('click', () => startGame(null));
+
+  checkSession();
+</script>

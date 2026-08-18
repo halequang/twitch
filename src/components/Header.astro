@@ -3,16 +3,19 @@ interface Props {
   brand?: string;
   tagline?: string;
   taglineVi?: string;
+  /** Minimal variant for inner pages — the landing page keeps the full header. */
+  compact?: boolean;
 }
 
 const {
   brand = '',
   tagline = 'Path of Exile · Twitch Drops · Account Shop',
   taglineVi = 'Trusted Shop since 2024 · POE Top-up · Account · Phần mềm',
+  compact = false,
 } = Astro.props;
 ---
 
-<header>
+<header class={compact ? 'compact' : undefined}>
   <svg class="brand-logo" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges" aria-label={`${brand} logo`}>
     <rect x="9" y="3" width="2" height="2" fill="#000"/>
     <rect x="9" y="5" width="2" height="1" fill="#000"/>
@@ -58,4 +61,42 @@ const {
     color: var(--gold-dim);
     text-align: center;
   }
+
+  /* Compact variant: drops the ceremonial bits (est badge, divider) and shrinks
+     everything else so an inner page starts with content, not branding. The
+     base sizes live in global.css; these override them. */
+  header.compact {
+    padding: 16px 0 20px;
+  }
+
+  header.compact .brand-logo {
+    width: 40px;
+    margin-bottom: 6px;
+    filter: drop-shadow(0 0 12px rgba(200, 164, 74, 0.35));
+  }
+
+  header.compact .brand-wordmark {
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+
+  header.compact .brand-fun { font-size: 12px; }
+  header.compact .brand-gaming { font-size: 9px; }
+
+  header.compact .est-badge { display: none; }
+
+  header.compact h1 {
+    font-size: clamp(18px, 2.6vw, 24px);
+    margin-bottom: 4px;
+    text-shadow: 0 0 18px rgba(200, 164, 74, 0.25);
+  }
+
+  header.compact .tagline {
+    font-size: 11px;
+    margin-bottom: 2px;
+  }
+
+  header.compact .tagline-vi { font-size: 11px; }
+
+  header.compact .divider { display: none; }
 </style>

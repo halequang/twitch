@@ -6,11 +6,13 @@
  * dev server middleware (see astro.config.mjs) so `npm run dev` works too.
  */
 
+import { PRODUCTS, FAQS, POLICIES } from "../data/shop-knowledge.js";
+
 // gemini-3.5-flash has a very low free-tier quota and 429s readily; 2.5-flash
 // is reliable on this key. If the primary is rate-limited, we fall back down
 // this chain (each has a separate quota bucket).
-export const DEFAULT_MODEL = "gemini-2.5-flash";
-export const FALLBACK_MODELS = ["gemini-2.5-flash-lite", "gemini-2.0-flash"];
+export const DEFAULT_MODEL = "gemini-3.5-flash";
+export const FALLBACK_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash"];
 export const MAX_MESSAGES = 16; // cap conversation history sent to Gemini
 export const MAX_CHARS = 2000;  // cap length of any single message
 export const MAX_RETRIES = 2;   // extra attempts on transient Gemini errors
@@ -18,38 +20,15 @@ const RETRY_BASE_MS = 500;      // backoff: 500ms, then 1000ms
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Single source of truth for what the shop sells. Keep in sync with
-// src/components/PricingBanner.astro and src/pages/index.astro.
-const CATALOG = `
-SHOP: FunGaming VN — chuyên Path of Exile (POE 1 & 2) cho người chơi Việt Nam.
+// The full knowledge text injected into the prompt, assembled from the editable
+// knowledge base (src/data/shop-knowledge.js): products + FAQ answers + policies.
+const FAQ_BLOCK = FAQS.map((f) => `  - ${f.q}: ${f.answer}`).join("\n");
+const KNOWLEDGE = `${PRODUCTS}
 
-[1] NẠP POINT (Point — tiền tệ cao cấp trong game, dùng mua skin/stash tab/hiệu ứng):
-  - 300P  — 390k  (TẶNG KÈM KEY POE2)
-  - 600P  — 790k  (TẶNG KÈM KEY POE2)
-  - 900P  — 1.080k
-  - 1000P — 1.250k (TẶNG KÈM KEY POE2) — đáng giá nhất theo đơn vị Point
-  Nạp càng nhiều giá mỗi Point càng rẻ. Gói 300/600/1000 còn được tặng key POE2.
+[FAQ] CÂU HỎI THƯỜNG GẶP & TRẢ LỜI MẪU:
+${FAQ_BLOCK}
 
-[2] ACCOUNT POE TẠO SẴN (acc trắng, dùng để nhận Twitch Drops / chơi mới):
-  - 1 tháng — 7k
-  - 3 tháng — 18k
-  - 6 tháng — 30k
-
-[3] BỘ SKIN TWITCH DROPS (tổng hợp skin nhận từ Twitch Drops):
-  - Full Pack    (/skins)    — bộ ĐẦY ĐỦ tất cả skin Twitch Drops của POE.
-  - Medium Pack  (/skins2)   — tuyển chọn các skin nổi bật nhất, gọn hơn Full.
-  - POE2 Pack    (/POE2)     — skin Twitch Drops dành riêng cho Path of Exile 2 (MỚI).
-  - Legacy Pack  (/skinsOLD) — kho skin từ các mùa giải cũ.
-
-[4] PHẦN MỀM BẢN QUYỀN CẤP SẴN:
-  - CapCut Pro — 1 năm, tài khoản dùng chung tối đa 4 khách, dùng cố định 1 thiết bị, bảo hành 1 đổi 1.
-
-MUA HÀNG & HỖ TRỢ:
-  - Đặt hàng tự động 24/7 qua Telegram bot: @fungamingvnbot
-  - Liên hệ trực tiếp: Facebook quanghavhit · Discord runninghorseq · Telegram @runninghorseq
-  - Shop uy tín đã xác minh: G2G (FunGamingVN), FunPay (#13338565)
-  - Có chính sách bảo hành cho account & phần mềm.
-`.trim();
+${POLICIES}`;
 
 const SYSTEM_PROMPT = `
 Bạn là trợ lý tư vấn mua hàng của shop game "FunGaming VN". Nhiệm vụ của bạn là
@@ -59,7 +38,7 @@ QUY TẮC:
 - LUÔN trả lời bằng TIẾNG VIỆT, giọng điệu thân thiện, ngắn gọn, dễ hiểu.
 - XƯNG HÔ NHẤT QUÁN trong MỌI câu trả lời: tự xưng là "mình" (hoặc "shop mình"),
   gọi khách hàng là "bạn". TUYỆT ĐỐI KHÔNG dùng "em", "anh", "chị", "quý khách".
-- CHỈ tư vấn dựa trên danh sách sản phẩm dưới đây. TUYỆT ĐỐI KHÔNG bịa ra
+- CHỈ tư vấn dựa trên thông tin dưới đây. TUYỆT ĐỐI KHÔNG bịa ra
   sản phẩm, giá, hay khuyến mãi không có trong danh sách.
 - Hỏi lại 1 câu ngắn để làm rõ nhu cầu nếu khách hỏi mơ hồ (chơi POE1 hay POE2,
   muốn skin / nạp point / mua acc, ngân sách bao nhiêu...).
@@ -68,9 +47,37 @@ QUY TẮC:
 - Giữ câu trả lời gọn (tối đa ~6 dòng). Có thể dùng gạch đầu dòng.
 - Nếu khách hỏi điều ngoài phạm vi shop, lịch sự đưa họ về chủ đề mua sản phẩm POE.
 
-DANH SÁCH SẢN PHẨM:
-${CATALOG}
+THÔNG TIN SHOP & SẢN PHẨM:
+${KNOWLEDGE}
 `.trim();
+
+// Normalize Vietnamese text for FAQ matching: lowercase, strip diacritics,
+// đ→d, and reduce punctuation to spaces so word-boundary matching works.
+function normalizeVi(s) {
+  return String(s)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "") // strip combining diacritic marks
+    .replace(/đ/g, "d")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Return a canned FAQ answer for a short, simple question, else null. Triggers
+// match on whole words (diacritics-insensitive). Long/complex messages are left
+// to Gemini so context isn't ignored.
+function matchFaq(text) {
+  const n = normalizeVi(text);
+  if (!n || n.length > 60) return null;
+  const padded = ` ${n} `;
+  for (const f of FAQS) {
+    for (const t of f.triggers) {
+      if (padded.includes(` ${normalizeVi(t)} `)) return f.answer;
+    }
+  }
+  return null;
+}
 
 /**
  * Generate a buy recommendation.
@@ -104,6 +111,14 @@ export async function generateAdvice({ messages, apiKey, model }) {
 
   if (contents.length === 0) {
     return { status: 400, body: { error: "empty_messages" } };
+  }
+
+  // Fast-path: answer common, simple questions instantly from the FAQ data —
+  // no Gemini call (faster, free, dodges quota). Only the latest user turn.
+  const last = contents[contents.length - 1];
+  if (last.role === "user") {
+    const canned = matchFaq(last.parts[0].text);
+    if (canned) return { status: 200, body: { reply: canned, model: "faq" } };
   }
 
   // Try the requested/default model first, then fall back down the chain if a

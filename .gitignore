@@ -8,3 +8,20 @@ dist
 pending-images
 .dev.vars
 .cf-bootstrap
+.env
+.env.local
+
+# Plaintext Steam credentials for the rental pool — never commit these.
+scripts/steam_accounts.txt
+scripts/*accounts*.txt
+*.credentials.txt
+
+# Local credential stores — never commit.
+.credentials
+
+# Password-rotation logs: these contain plaintext OLD and NEW Steam passwords.
+scripts/rental_rotate_results.txt
+*.newpass.txt
+
+__pycache__/
+*.pyc

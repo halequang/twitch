@@ -62,8 +62,9 @@ const renderedGuides = await Promise.all(
   })
 );
 
-const canvaUrl = 'https://www.canva.com/design/DAG0smoSLKc/mJTJjk8UFfV_yvpRTiO_fw/view';
-const feedbackCanvaUrl = 'https://www.canva.com/design/DAHKxfinCJM/m7GQT4cafqLAlpSc0hHpwQ/view';
+const canvaUrl = 'https://www.canva.com/design/DAHR88WNLTc/uWL3b441oniVDXseWh98ww/view';
+// HIDDEN per regulation — payment/receipt info not allowed
+// const feedbackCanvaUrl = 'https://www.canva.com/design/DAHKxfinCJM/m7GQT4cafqLAlpSc0hHpwQ/view';
 
 const navItems = [
   { href: '#pricing',  num: '①', label: 'Bảng Giá' },
@@ -72,14 +73,15 @@ const navItems = [
   { href: '#software', num: '④', label: 'Phần Mềm' },
   { href: '#guides',   num: '⑤', label: 'Hướng Dẫn' },
   { href: '#warranty', num: '⑥', label: 'Bảo Hành' },
-  { href: '#feedback', num: '⑦', label: 'Feedback' },
+  // HIDDEN per regulation — payment/receipt info not allowed
+  // { href: '#feedback', num: '⑦', label: 'Feedback' },
   { href: '#contact',  num: '⑧', label: 'Liên Hệ' },
 ];
 ---
 
 <Layout title="FunGaming VN — POE Top-up, Accounts, Twitch Drops">
 
-  {/* Promo disabled — re-enable by uncommenting: <PromoModal /> */}
+  <!--<PromoModal />-->
 
   <Header />
 
@@ -158,6 +160,7 @@ const navItems = [
   />
   <WarrantySection />
 
+  {/* HIDDEN per regulation — payment/receipt info not allowed
   <SectionTitle
     id="feedback"
     title="⑦ Feedback"
@@ -169,6 +172,7 @@ const navItems = [
     title="FunGaming · customer feedback"
     viewUrl={feedbackCanvaUrl}
   />
+  */}
 
   <SectionTitle
     id="contact"

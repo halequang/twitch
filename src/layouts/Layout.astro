@@ -7,10 +7,13 @@ interface Props {
   description?: string;
   lang?: string;
   image?: string;
+  /** The sales chat widget. Off for signed-in areas where it only gets in the way. */
+  advisor?: boolean;
 }
 
 const {
   title,
+  advisor = true,
   description = 'Tổng hợp skin Twitch Drops cho Path of Exile và Path of Exile 2.',
   lang = 'vi',
   image = '/FuNGAMING%20logo.png',
@@ -63,7 +66,7 @@ const ogImage = new URL(image, siteOrigin).href;
 
     <button id="toTop" type="button" aria-label="Back to top" title="Back to top"></button>
 
-    <AdvisorWidget />
+    {advisor && <AdvisorWidget />}
 
     <script is:inline>
       (function () {
