@@ -118,6 +118,30 @@ const rentalGame = GAMES[DEFAULT_GAME];
       <!-- Live rentals and unpaid orders are rendered here by the script. -->
       <div id="rentOrders" class="rent-orders" hidden></div>
 
+      <!-- Shown once a payment settles. A first-time renter's real question is
+           "where do I get the account now?", so the credentials are put in front
+           of them here and the box also names the section that keeps showing
+           them, for when this popup is closed. Inside .isle to inherit its
+           palette; position:fixed takes it out of the flow. -->
+      <div id="doneModal" class="done-modal" hidden>
+        <div class="done-card" role="dialog" aria-modal="true" aria-labelledby="doneTitle">
+          <button id="doneClose" type="button" class="done-x" aria-label="Đóng">×</button>
+          <p class="done-mark" aria-hidden="true">✓</p>
+          <h4 id="doneTitle" class="done-title">Đơn hoàn tất</h4>
+          <p id="doneSub" class="done-sub"></p>
+          <div id="doneBody" class="done-body"></div>
+          <div class="done-where">
+            <span class="done-where-icon" aria-hidden="true">📍</span>
+            <p>
+              Thông tin đăng nhập luôn nằm ở mục <strong>“Tài khoản đang thuê”</strong> ngay
+              trên trang này — đăng nhập lại bất cứ lúc nào để xem lại, không cần lưu vào đâu.
+              Vui lòng <strong>không đổi mật khẩu</strong> tài khoản.
+            </p>
+          </div>
+          <button id="doneGo" type="button" class="btn done-go">Xem tài khoản của tôi</button>
+        </div>
+      </div>
+
       <div class="rent-stock">
         <span class="stock-label">Tài khoản còn trống</span>
         <span class="stock-value" id="rentStock">—</span>
@@ -441,6 +465,174 @@ const rentalGame = GAMES[DEFAULT_GAME];
     background: rgba(200, 164, 74, 0.06);
     color: var(--text);
   }
+
+  /* ─── Order-complete popup ─────────────────── */
+
+  .done-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(4, 10, 6, 0.82);
+    backdrop-filter: blur(3px);
+  }
+
+  .done-modal[hidden] { display: none; }
+
+  .done-card {
+    position: relative;
+    width: 100%;
+    max-width: 460px;
+    max-height: 88vh;
+    overflow-y: auto;
+    padding: 30px 26px 24px;
+    background: var(--isle-bg-2);
+    border: 1px solid var(--isle-green);
+    border-radius: 6px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+    animation: done-in 0.22s ease-out;
+  }
+
+  @keyframes done-in {
+    from { opacity: 0; transform: translateY(8px) scale(0.985); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .done-card { animation: none; }
+  }
+
+  .done-x {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    padding: 4px 8px;
+    font: inherit;
+    font-size: 20px;
+    line-height: 1;
+    color: var(--isle-green);
+    background: none;
+    border: 0;
+    cursor: pointer;
+  }
+
+  .done-x:hover { color: var(--isle-cream); }
+
+  .done-mark {
+    width: 52px;
+    height: 52px;
+    margin: 0 auto 14px;
+    font-size: 26px;
+    line-height: 48px;
+    text-align: center;
+    color: var(--isle-bg);
+    background: var(--isle-green);
+    border-radius: 50%;
+  }
+
+  .done-title {
+    margin: 0 0 6px;
+    font-size: 20px;
+    text-align: center;
+    color: var(--isle-cream);
+  }
+
+  .done-sub {
+    margin: 0 0 18px;
+    font-size: 12.5px;
+    text-align: center;
+    color: var(--isle-green);
+  }
+
+  .done-body { margin-bottom: 16px; }
+
+  /* Credential rows are built in JS, so they carry no scoping attribute. */
+  .done-body :global(.creds) {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 8px 12px;
+    align-items: center;
+    margin: 0;
+    padding: 14px;
+    background: rgba(127, 174, 99, 0.07);
+    border: 1px solid var(--isle-line);
+    border-radius: 4px;
+  }
+
+  .done-body :global(.creds dt) {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--isle-green);
+  }
+
+  .done-body :global(.creds dd) {
+    margin: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 14px;
+    color: var(--isle-cream);
+    word-break: break-all;
+  }
+
+  .done-body :global(.copy-btn) {
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--isle-green);
+    background: none;
+    border: 1px solid var(--isle-line);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .done-body :global(.copy-btn:hover) {
+    color: var(--isle-cream);
+    border-color: var(--isle-green);
+  }
+
+  .done-body :global(.done-fallback) {
+    margin: 0;
+    padding: 14px;
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--isle-cream);
+    background: rgba(127, 174, 99, 0.07);
+    border: 1px solid var(--isle-line);
+    border-radius: 4px;
+  }
+
+  .done-where {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 18px;
+    padding: 12px 14px;
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: var(--isle-cream);
+    background: rgba(232, 200, 119, 0.06);
+    border-left: 2px solid var(--isle-gold);
+  }
+
+  .done-where p { margin: 0; }
+  .done-where strong { color: var(--isle-gold); font-weight: 600; }
+  .done-where-icon { flex: none; }
+
+  .done-go { width: 100%; }
+
+  /* The rental list is flagged briefly after "Xem tài khoản của tôi", so the eye
+     lands on the right block once the popup is out of the way. */
+  .rent-orders.flash {
+    animation: orders-flash 1.6s ease-out;
+  }
+
+  @keyframes orders-flash {
+    0%, 100% { box-shadow: none; }
+    25%      { box-shadow: 0 0 0 2px var(--isle-gold); }
+  }
+
+  body.modal-open { overflow: hidden; }
 
   .rent-notice.error {
     border-color: #6a3030;
@@ -1368,7 +1560,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
         return rentNotice('Không tìm thấy đơn thanh toán này.', true);
       }
 
-      if (TERMINAL.has(order.status)) return announceOutcome(order);
+      if (TERMINAL.has(order.status)) return announceOutcome(order, orders);
 
       if (Date.now() - started > deadlineMs) {
         return rentNotice(
@@ -1383,12 +1575,125 @@ const rentalGame = GAMES[DEFAULT_GAME];
     }
   }
 
-  function announceOutcome(order) {
+  /* ─── Order-complete popup ──────────────────── */
+
+  let doneLastFocus = null;
+
+  function fmtWhen(ts) {
+    return new Date(ts * 1000).toLocaleString('vi-VN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      day: '2-digit',
+      month: '2-digit',
+    });
+  }
+
+  function closeDoneModal() {
+    const modal = el('doneModal');
+    if (!modal || modal.hidden) return;
+    modal.hidden = true;
+    document.body.classList.remove('modal-open');
+    // Send focus back where it was, rather than to the top of the document.
+    if (doneLastFocus && document.contains(doneLastFocus)) doneLastFocus.focus();
+    doneLastFocus = null;
+  }
+
+  /**
+   * An extension order never carries credentials of its own — they belong to the
+   * rental it topped up, which is the row that stays 'active'. Without this the
+   * popup for a renewal would claim it could not find the account.
+   */
+  function doneCredentials(order, orders) {
+    if (order.credentials) return { creds: order.credentials, expiresAt: order.expiresAt };
+    if (order.extendsOrder != null) {
+      const parent = (orders || []).find(
+        (o) => String(o.orderCode) === String(order.extendsOrder)
+      );
+      if (parent?.credentials) {
+        return { creds: parent.credentials, expiresAt: parent.expiresAt ?? order.expiresAt };
+      }
+    }
+    return { creds: null, expiresAt: order.expiresAt };
+  }
+
+  function openDoneModal(order, orders) {
+    const modal = el('doneModal');
+    if (!modal) return;
+    const extension = order.status === 'extended';
+    const { creds, expiresAt } = doneCredentials(order, orders);
+
+    el('doneTitle').textContent = extension ? 'Gia hạn thành công' : 'Đơn hoàn tất';
+    el('doneSub').textContent =
+      'Mã đơn ' + order.orderCode + ' · ' + order.hours + ' giờ' +
+      (expiresAt ? ' · dùng đến ' + fmtWhen(expiresAt) : '');
+
+    const body = el('doneBody');
+    body.textContent = '';
+    if (creds) {
+      const dl = document.createElement('dl');
+      dl.className = 'creds';
+      credentialRow(dl, 'Tài khoản', creds.login);
+      credentialRow(dl, 'Mật khẩu', creds.password);
+      if (creds.email) credentialRow(dl, 'Email', creds.email);
+      if (creds.emailPassword) credentialRow(dl, 'Mật khẩu email', creds.emailPassword);
+      body.appendChild(dl);
+    } else {
+      // Paid, but the credentials are not in hand yet. Never imply they are lost.
+      const p = document.createElement('p');
+      p.className = 'done-fallback';
+      p.textContent = extension
+        ? 'Thời hạn đã được cộng thêm. Tài khoản đăng nhập không thay đổi — xem ở mục “Tài khoản đang thuê” bên dưới.'
+        : 'Đã nhận thanh toán. Thông tin đăng nhập sẽ hiện ở mục “Tài khoản đang thuê” bên dưới trong ít giây — tải lại trang nếu chưa thấy.';
+      body.appendChild(p);
+    }
+
+    doneLastFocus = document.activeElement;
+    modal.hidden = false;
+    document.body.classList.add('modal-open');
+    el('doneClose').focus();
+  }
+
+  el('doneClose').addEventListener('click', closeDoneModal);
+
+  // Clicking the backdrop closes; clicking inside the card must not.
+  el('doneModal').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeDoneModal();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeDoneModal();
+  });
+
+  el('doneGo').addEventListener('click', () => {
+    closeDoneModal();
+    const list = el('rentOrders');
+    if (!list || list.hidden) return;
+    // Wait a frame: closing the popup unlocks body scrolling, and scrolling in
+    // the same frame is measured against the still-locked page, which lands
+    // roughly 90px down instead of on the rental.
+    requestAnimationFrame(() => {
+      list.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      list.classList.remove('flash');
+      void list.offsetWidth; // restart the animation if it is already flashing
+      list.classList.add('flash');
+      setTimeout(() => list.classList.remove('flash'), 1800);
+    });
+  });
+
+  function announceOutcome(order, orders) {
     switch (order.status) {
       case 'active':
-        return rentNotice('Thanh toán thành công — tài khoản của bạn đã sẵn sàng bên dưới.', false);
-      case 'extended':
-        return rentNotice('Gia hạn thành công — thời hạn thuê đã được cộng thêm.', false);
+      case 'extended': {
+        // Keep the inline notice too: it survives closing the popup, and it is
+        // the only feedback left if the popup markup ever goes missing.
+        rentNotice(
+          order.status === 'extended'
+            ? 'Gia hạn thành công — thời hạn thuê đã được cộng thêm.'
+            : 'Thanh toán thành công — tài khoản của bạn đã sẵn sàng bên dưới.',
+          false
+        );
+        return openDoneModal(order, orders);
+      }
       case 'awaiting_stock':
         return rentNotice(
           'Đã nhận thanh toán nhưng hiện hết tài khoản trống. Vui lòng liên hệ shop kèm mã đơn ' +
