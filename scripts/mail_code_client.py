@@ -18,6 +18,7 @@ Usage:
 """
 import json
 import os
+import re
 import ssl
 import urllib.error
 import urllib.request
@@ -44,10 +45,34 @@ def _api_url():
     return os.environ.get("MAIL_API_URL", DEFAULT_API_URL)
 
 
+def _dev_vars_key():
+    """MAIL_API_KEY from the repo's gitignored .dev.vars (../.dev.vars).
+
+    So the standalone CLI reads the key from the same place
+    steam_change_password.py does, instead of only working when the shell happens
+    to export it.
+    """
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".dev.vars")
+    if not os.path.exists(path):
+        return ""
+    try:
+        for line in open(path, encoding="utf-8"):
+            m = re.match(r"\s*(?:export\s+)?MAIL_API_KEY\s*=\s*(.*)", line)
+            if m:
+                return m.group(1).strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return ""
+
+
 def _api_key():
-    key = os.environ.get("MAIL_API_KEY", "")
+    # Environment wins, so a one-off override still works.
+    key = os.environ.get("MAIL_API_KEY", "") or _dev_vars_key()
     if not key:
-        raise RuntimeError("MAIL_API_KEY is not set (export it, matching the Worker secret)")
+        raise RuntimeError(
+            "MAIL_API_KEY is not set - export it, or put it in .dev.vars, "
+            "matching the Worker secret"
+        )
     return key
 
 
