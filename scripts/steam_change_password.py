@@ -41,6 +41,10 @@ ENCRYPTED password back to steam_accounts.password_enc. --remote hits production
 (default is the local D1); production runs prompt for confirmation. Crypto is done
 via _d1crypto.mjs (byte-identical to the worker's AES-GCM).
 
+Immediately before each password change the pool is re-read, and the account is
+skipped if it has been rented again while earlier accounts were being processed
+(see rental_restarted) — rotating then would lock out a paying customer.
+
 On a successful change the account is also set back to status 'available', so the
 rotated login re-enters the rental pool. Enforced in SQL, three states survive a
 rotation untouched:
@@ -402,6 +406,35 @@ def _cli_values(argv, name):
     return out
 
 
+def rental_restarted(db_id, remote):
+    """Why this account must NOT be rotated right now, or None if it is safe.
+
+    Accounts are selected up front, but rotating one takes minutes — a browser
+    session plus waiting on an email verification code. A customer who pays
+    inside that window is handed this very login straight from the pool, so the
+    "rental is over" fact that selected it can be stale by the time we get here.
+    Changing the password then locks a paying renter out of a live rental.
+
+    So the pool is re-read immediately before Steam is touched. An active order
+    is the authority: status alone would miss the moment between a payment
+    claiming the account and the order row landing.
+    """
+    sql = ("SELECT sa.status AS status, "
+           "(SELECT COUNT(*) FROM orders o "
+           "  WHERE o.account_id = sa.id AND o.status = 'active') AS active_orders "
+           f"FROM steam_accounts sa WHERE sa.id = {int(db_id)}")
+    rows = _d1(sql, remote)
+    if not rows:
+        return "deleted"
+    row = rows[0]
+    if int(row.get("active_orders") or 0) > 0:
+        return "re-rented (active order)"
+    status = (row.get("status") or "").strip()
+    if status != "available":
+        return f"status is now '{status}'"
+    return None
+
+
 def load_db_accounts_by_login(logins, remote, key):
     """Load specific accounts from the DB by login (ANY status — bypasses the
     rental-over filter), decrypted for login. For the --account force option."""
@@ -433,14 +466,21 @@ def load_db_accounts_by_login(logins, remote, key):
 
 
 def load_done(path):
-    """Steam usernames already recorded in the result file."""
+    """Steam usernames already recorded in the result file.
+
+    A SKIPPED_* row does not count as done. Being re-rented is temporary, and
+    treating it as finished would retire the account from rotation for good —
+    handing the next customer the password the previous renter still knows.
+    """
     done = set()
     if not os.path.exists(path):
         return done
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
-            u = line.strip().split("|", 1)[0]
-            if u:
+            parts = line.strip().split("|")
+            u = parts[0] if parts else ""
+            status = parts[4] if len(parts) > 4 else ""
+            if u and not status.startswith("SKIPPED"):
                 done.add(u)
     return done
 
@@ -987,6 +1027,21 @@ def main():
     for n, acc in enumerate(todo, start=1):
         user = acc["steam_user"]
         print(f"\n===== [{n}/{len(todo)}] {user} =====")
+
+        # Re-check the pool before touching Steam. --account is an explicit force,
+        # so it is exempt; the rental-over sweep is not.
+        if use_db and not account_logins and acc.get("db_id") is not None:
+            try:
+                blocked = rental_restarted(acc["db_id"], remote)
+            except Exception as e:
+                # Cannot prove the account is free, so do not gamble a live rental.
+                blocked = f"re-check failed ({e})"
+            if blocked:
+                print(f"  ⏭️  [{user}] SKIPPED — {blocked} since it was loaded; "
+                      f"leaving the password as the renter has it.")
+                record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_RERENTED")
+                continue
+
         driver = None
         new_pass = generate_password()
         try:
