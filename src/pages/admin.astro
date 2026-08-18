@@ -28,7 +28,45 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
     <div class="stats" id="stats"></div>
 
-    <h2 class="head">Kho tài khoản</h2>
+    <section id="ownerOnly" hidden>
+      <h2 class="head">Nhóm tài khoản</h2>
+      <form id="groupForm" class="card form">
+        <p class="form-title">Thêm nhóm</p>
+        <div class="grid">
+          <label>Tên nhóm <input name="name" required autocomplete="off" placeholder="Kho A" /></label>
+          <label>Ghi chú <input name="note" autocomplete="off" placeholder="Nhà cung cấp, lô hàng…" /></label>
+        </div>
+        <button type="submit" class="btn">Thêm nhóm</button>
+      </form>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead><tr><th>#</th><th>Tên</th><th>Ghi chú</th><th>Số tài khoản</th><th class="right">Thao tác</th></tr></thead>
+          <tbody id="groupsBody"></tbody>
+        </table>
+      </div>
+
+      <h2 class="head spaced">Quản trị viên</h2>
+      <form id="managerForm" class="card form">
+        <p class="form-title">Thêm / cập nhật quản trị viên</p>
+        <div class="grid">
+          <label>Email hoặc provider:sub
+            <input name="identity" required autocomplete="off" placeholder="an@shop.vn" />
+          </label>
+          <label>Tên gợi nhớ <input name="label" autocomplete="off" placeholder="An — kho A" /></label>
+        </div>
+        <p class="form-title">Nhóm được quản lý</p>
+        <div id="managerGroupPicks" class="picks"></div>
+        <button type="submit" class="btn">Lưu quản trị viên</button>
+      </form>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead><tr><th>#</th><th>Danh tính</th><th>Tên</th><th>Nhóm</th><th class="right">Thao tác</th></tr></thead>
+          <tbody id="managersBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <h2 class="head spaced">Kho tài khoản</h2>
 
     <form id="addForm" class="card form">
       <p class="form-title">Thêm tài khoản</p>
@@ -37,6 +75,9 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
           <select name="game">
             {games.map((g) => <option value={g.id} selected={g.id === DEFAULT_GAME}>{g.name}</option>)}
           </select>
+        </label>
+        <label>Nhóm
+          <select name="groupId" id="addGroup"><option value="">— chưa phân nhóm —</option></select>
         </label>
         <label>Login <input name="login" required autocomplete="off" /></label>
         <label>Mật khẩu Steam <input name="password" required autocomplete="new-password" /></label>
@@ -52,7 +93,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       <table class="tbl" id="accountsTable">
         <thead>
           <tr>
-            <th>#</th><th>Login</th><th>Email</th><th>Trạng thái</th>
+            <th>#</th><th>Login</th><th>Nhóm</th><th>Email</th><th>Trạng thái</th>
             <th>Đang thuê</th><th>Ghi chú</th><th class="right">Thao tác</th>
           </tr>
         </thead>
@@ -260,7 +301,47 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     box-shadow: 0 0 0 3px rgba(37, 99, 201, 0.15);
   }
 
+  .picks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    margin-bottom: 18px;
+  }
+
+  .picks :global(.pick) {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--ad-text);
+  }
+
+  .picks :global(input[type="checkbox"]) { width: 16px; height: 16px; }
+
   .table-wrap { overflow-x: auto; margin-bottom: 10px; }
+
+  .picks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    margin-bottom: 18px;
+  }
+
+  .picks :global(.pick) {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--ad-text);
+  }
+
+  .picks :global(input[type="checkbox"]) { width: 16px; height: 16px; }
 
   .table-wrap {
     background: var(--ad-surface);
@@ -481,6 +562,11 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     return data;
   }
 
+  let IS_OWNER = false;
+  let GROUPS = [];
+
+  const a_groupId = (account) => (account.groupId == null ? null : Number(account.groupId));
+
   /* ─── rendering ──────────────────────────────── */
 
   function cell(row, text, cls) {
@@ -529,7 +615,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     if (!accounts.length) {
       const tr = document.createElement('tr');
       const td = cell(tr, 'Kho trống — thêm tài khoản ở trên.');
-      td.colSpan = 7;
+      td.colSpan = 8;
       td.className = 'muted';
       body.appendChild(tr);
       return;
@@ -543,6 +629,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       login.textContent = a.login;
       cell(tr, login);
 
+      cell(tr, a.groupName || '— chưa phân nhóm —');
       cell(tr, a.email || '—');
       cell(tr, pill(a.status, a.status));
       cell(
@@ -607,6 +694,132 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     }
   }
 
+
+  function fillGroupSelect(select) {
+    if (!select) return;
+    const current = select.value;
+    select.textContent = '';
+    if (IS_OWNER) {
+      const none = document.createElement('option');
+      none.value = '';
+      none.textContent = '— chưa phân nhóm —';
+      select.appendChild(none);
+    }
+    for (const g of GROUPS) {
+      const option = document.createElement('option');
+      option.value = String(g.id);
+      option.textContent = g.name;
+      select.appendChild(option);
+    }
+    select.value = current;
+  }
+
+  function renderGroups(groups) {
+    GROUPS = groups;
+    fillGroupSelect(el('addGroup'));
+
+    const body = el('groupsBody');
+    if (!body) return;
+    body.textContent = '';
+    if (!groups.length) {
+      const tr = document.createElement('tr');
+      const td = cell(tr, 'Chưa có nhóm nào — thêm ở trên.');
+      td.colSpan = 5;
+      td.className = 'muted';
+      body.appendChild(tr);
+    }
+    for (const g of groups) {
+      const tr = document.createElement('tr');
+      cell(tr, String(g.id));
+      cell(tr, g.name);
+      cell(tr, g.note || '—');
+      cell(tr, String(g.accounts));
+      const actions = document.createElement('td');
+      actions.className = 'right';
+      const del = document.createElement('button');
+      del.className = 'mini danger';
+      del.textContent = 'Xoá';
+      del.addEventListener('click', async () => {
+        if (!confirm(`Xoá nhóm "${g.name}"?`)) return;
+        try {
+          const data = await api('groups/' + g.id, { method: 'DELETE' });
+          renderGroups(data.groups);
+          notice('Đã xoá nhóm "' + g.name + '".', false);
+          loadAll();
+        } catch (err) {
+          if (err.data?.error === 'group_not_empty') {
+            notice(
+              'Nhóm còn ' + err.data.accounts + ' tài khoản. Chuyển chúng sang nhóm khác trước khi xoá.',
+              true
+            );
+          } else {
+            notice('Xoá nhóm thất bại: ' + err.message, true);
+          }
+        }
+      });
+      actions.appendChild(del);
+      tr.appendChild(actions);
+      body.appendChild(tr);
+    }
+
+    // Checkbox list for assigning groups to a manager.
+    const picks = el('managerGroupPicks');
+    if (picks) {
+      picks.textContent = '';
+      for (const g of groups) {
+        const label = document.createElement('label');
+        label.className = 'pick';
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.value = String(g.id);
+        box.name = 'group';
+        label.append(box, document.createTextNode(' ' + g.name));
+        picks.appendChild(label);
+      }
+    }
+  }
+
+  function renderManagers(managers) {
+    const body = el('managersBody');
+    if (!body) return;
+    body.textContent = '';
+    if (!managers.length) {
+      const tr = document.createElement('tr');
+      const td = cell(tr, 'Chưa có quản trị viên nào. Chủ shop luôn truy cập được qua ADMIN_EMAILS.');
+      td.colSpan = 5;
+      td.className = 'muted';
+      body.appendChild(tr);
+      return;
+    }
+    for (const m of managers) {
+      const tr = document.createElement('tr');
+      cell(tr, String(m.id));
+      const id = document.createElement('code');
+      id.textContent = m.identity;
+      cell(tr, id);
+      cell(tr, m.label || '—');
+      cell(tr, m.groupNames || '(chưa gán nhóm)');
+      const actions = document.createElement('td');
+      actions.className = 'right';
+      const del = document.createElement('button');
+      del.className = 'mini danger';
+      del.textContent = 'Xoá';
+      del.addEventListener('click', async () => {
+        if (!confirm(`Xoá quyền quản trị của "${m.identity}"?`)) return;
+        try {
+          const data = await api('managers/' + m.id, { method: 'DELETE' });
+          renderManagers(data.managers);
+          notice('Đã xoá quản trị viên "' + m.identity + '".', false);
+        } catch (err) {
+          notice('Xoá thất bại: ' + err.message, true);
+        }
+      });
+      actions.appendChild(del);
+      tr.appendChild(actions);
+      body.appendChild(tr);
+    }
+  }
+
   /* ─── actions ────────────────────────────────── */
 
   async function revealAccount(account, container, button) {
@@ -660,7 +873,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     tr.className = 'edit-row';
     tr.dataset.for = String(account.id);
     const td = document.createElement('td');
-    td.colSpan = 7;
+    td.colSpan = 8;
 
     const form = document.createElement('form');
     form.className = 'edit-form';
@@ -678,6 +891,28 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       label.appendChild(input);
       grid.appendChild(label);
     }
+
+    // Only groups this actor may use — reassigning into someone else's group is
+    // refused server-side anyway.
+    const groupLabel = document.createElement('label');
+    groupLabel.textContent = 'Nhóm';
+    const groupSelect = document.createElement('select');
+    groupSelect.name = 'groupId';
+    if (IS_OWNER) {
+      const none = document.createElement('option');
+      none.value = '';
+      none.textContent = '— chưa phân nhóm —';
+      groupSelect.appendChild(none);
+    }
+    for (const g of GROUPS) {
+      const option = document.createElement('option');
+      option.value = String(g.id);
+      option.textContent = g.name;
+      if (g.id === a_groupId(account)) option.selected = true;
+      groupSelect.appendChild(option);
+    }
+    groupLabel.appendChild(groupSelect);
+    grid.appendChild(groupLabel);
 
     const statusLabel = document.createElement('label');
     statusLabel.textContent = 'Trạng thái';
@@ -803,6 +1038,57 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     }
   });
 
+  el('groupForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+      const data = await api('groups', {
+        method: 'POST',
+        body: JSON.stringify(Object.fromEntries(new FormData(form).entries())),
+      });
+      renderGroups(data.groups);
+      notice('Đã thêm nhóm.', false);
+      form.reset();
+    } catch (err) {
+      notice(err.data?.error === 'duplicate_group' ? 'Tên nhóm này đã tồn tại.' : 'Thêm nhóm thất bại: ' + err.message, true);
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  el('managerForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    const groupIds = [...form.querySelectorAll('input[name="group"]:checked')].map((b) => Number(b.value));
+    try {
+      const data = await api('managers', {
+        method: 'POST',
+        body: JSON.stringify({
+          identity: form.identity.value,
+          label: form.label.value,
+          groupIds,
+        }),
+      });
+      renderManagers(data.managers);
+      notice(
+        groupIds.length
+          ? 'Đã lưu quản trị viên.'
+          : 'Đã lưu, nhưng chưa gán nhóm nào — người này sẽ không thấy tài khoản nào.',
+        !groupIds.length
+      );
+      form.reset();
+      form.querySelectorAll('input[name="group"]').forEach((b) => (b.checked = false));
+    } catch (err) {
+      notice('Lưu quản trị viên thất bại: ' + err.message, true);
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
   /* ─── boot ───────────────────────────────────── */
 
   async function loadSummary() {
@@ -815,9 +1101,17 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
   async function loadAll() {
     try {
-      const [accounts, orders] = await Promise.all([api('accounts'), api('orders')]);
+      const [groups, accounts, orders] = await Promise.all([api('groups'), api('accounts'), api('orders')]);
+      renderGroups(groups.groups);
       renderAccounts(accounts.accounts);
       renderOrders(orders.orders);
+      if (IS_OWNER) {
+        try {
+          renderManagers((await api('managers')).managers);
+        } catch {
+          /* owner-only; ignore if it ever 403s */
+        }
+      }
       await loadSummary();
     } catch (err) {
       notice('Không tải được dữ liệu: ' + err.message, true);
@@ -843,7 +1137,12 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       return;
     }
 
-    el('adminWho').textContent = 'Đăng nhập với tư cách quản trị: ' + (session.email || '—');
+    IS_OWNER = session.role === 'owner';
+    el('adminWho').textContent =
+      (IS_OWNER ? 'Chủ shop: ' : 'Quản trị viên (theo nhóm): ') + (session.email || '—');
+    // Group and manager administration is the owner's alone.
+    const owner = el('ownerOnly');
+    if (owner) owner.hidden = !IS_OWNER;
     el('adminPanel').hidden = false;
     loadAll();
   })();

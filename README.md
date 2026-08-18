@@ -367,6 +367,34 @@ What it does:
   holds, and timestamps.
 - **Summary** — pool counts, active rentals, orders awaiting stock, paid revenue.
 
+### Groups and scoped managers
+
+Steam accounts can be filed into **groups** ("Kho A", a supplier, a batch), and a
+**manager** is assigned one or more groups. A manager sees and edits only accounts
+in their groups, plus the orders that used those accounts — including revenue,
+which is theirs alone, not shop-wide.
+
+| | Owner | Manager |
+| --- | --- | --- |
+| Source | `ADMIN_EMAILS` var | `managers` table |
+| Accounts | all, including ungrouped | their groups only |
+| Reveal password | any | their groups only |
+| Orders / revenue | shop-wide | their accounts only |
+| Create groups, add managers | yes | no |
+
+The **owner stays in `ADMIN_EMAILS`, not the database**, on purpose: if the owner
+were a row, deleting it would lock everyone out of the panel with no way back in.
+The env var is the recovery path.
+
+Two deliberate choices in the scoping:
+
+- A manager with **no groups assigned matches nothing**, never everything — an
+  unscoped query must not silently become shop-wide.
+- Accounts with `group_id NULL` are **owner-only**, so pre-existing stock does not
+  become readable the moment the first manager is added.
+- Rows outside a manager's groups answer **404, not 403** — a 403 would confirm
+  the account exists and leak another group's inventory.
+
 Safety rules built into the API (`src/lib/admin.js`), not just the UI:
 
 - Listings **never** include passwords, encrypted or not. Revealing one is a
