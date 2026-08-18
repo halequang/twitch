@@ -16,6 +16,9 @@ Email verification codes are read automatically, tried in this order:
      Needs MAIL_API_KEY (env, or TWITCH_DIR/.dev.vars) matching that Worker's
      secret. Works without outlook tokens because the server looks the mailbox up
      by email — which is what makes --db mode viable, since D1 stores no tokens.
+     ONLY tried for outlook.com / hotmail.com addresses (GRAPH_MAIL_DOMAINS): the
+     endpoint reads via Microsoft Graph, so any other provider is skipped rather
+     than polled pointlessly.
   2. Microsoft Graph directly, if the account carries refresh_token|client_id.
   3. a manual prompt.
 
@@ -209,6 +212,24 @@ def _load_enc_key():
     return ""
 
 
+# /api/read-code reads mailboxes over Microsoft Graph, so it can only ever help
+# for Microsoft-hosted addresses. Most of the pool is on other providers, where a
+# call would just burn time and rate limit before failing. Extend this tuple if
+# more Microsoft domains show up (live.com, msn.com...).
+GRAPH_MAIL_DOMAINS = ("outlook.com", "hotmail.com")
+
+
+def _is_graph_mailbox(email):
+    """True if this address is one the mail API can actually read."""
+    domain = str(email or "").rsplit("@", 1)[-1].strip().lower()
+    return domain in GRAPH_MAIL_DOMAINS
+
+
+def _can_use_mail_api(acc):
+    """Whether it is worth calling /api/read-code for this account at all."""
+    return bool(_load_mail_api_key()) and _is_graph_mailbox(acc.get("email"))
+
+
 def _load_mail_api_key():
     """MAIL_API_KEY from the environment, else from TWITCH_DIR/.dev.vars.
 
@@ -233,6 +254,10 @@ def _read_code_api(acc):
     statelessly, otherwise the server looks the account up by email — which is
     what makes this work in --db mode, where D1 stores no outlook tokens.
     """
+    # Guard here too, not just at the call sites, so no future caller can leak a
+    # non-Microsoft mailbox into a pointless Graph lookup.
+    if not _is_graph_mailbox(acc.get("email")):
+        return ""
     key = _load_mail_api_key()
     if not key:
         return ""
@@ -260,6 +285,8 @@ def poll_new_code(acc, before_code, max_wait=GUARD_CODE_WAIT_SEC,
     are single-use, so submitting a stale one just burns the attempt and fails
     confusingly. Snapshotting before the send and waiting for a change is what
     makes this reliable."""
+    if not _can_use_mail_api(acc):
+        return ""
     label = acc.get("steam_user")
     deadline = time.time() + max_wait
     while time.time() < deadline:
@@ -629,7 +656,7 @@ def steam_login(driver, acc):
         print(f"  [{label}] entered credentials")
         # Snapshot before submitting: Steam Guard may email a code, and we must
         # not resubmit one left over from an earlier attempt.
-        guard_before = _read_code_api(acc) if _load_mail_api_key() else ""
+        guard_before = _read_code_api(acc) if _can_use_mail_api(acc) else ""
         submit_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         pass_input.send_keys(Keys.ENTER)
         print(f"  [{label}] submitted login")
@@ -643,7 +670,7 @@ def steam_login(driver, acc):
 
         if _is_steam_guard_prompt(driver):
             code = None
-            if _load_mail_api_key():
+            if _can_use_mail_api(acc):
                 print(f"  [{label}] Steam Guard prompt — asking /api/read-code for {acc['email']}...")
                 # `guard_before` was snapshotted before the login was submitted.
                 code = poll_new_code(acc, guard_before) or None
@@ -748,11 +775,13 @@ def change_password(driver, acc, old_pass, new_pass):
         # per-provider code extraction as the /mail UI, and works without outlook
         # tokens because the server can look the mailbox up by email.
         code = ""
-        if _load_mail_api_key():
+        if _can_use_mail_api(acc):
             print(f"  [{label}] waiting on /api/read-code for {acc['email']}...")
             code = poll_new_code(acc, before_code)
             if code:
                 print(f"  [{label}] got code {code} from the mail API")
+        elif acc.get("email") and not _is_graph_mailbox(acc.get("email")):
+            print(f"  [{label}] {acc['email']} is not outlook/hotmail — skipping the mail API")
 
         # Fallback: read Graph directly, if this account carries inline tokens.
         if not code and acc.get("refresh_token") and acc.get("client_id"):
