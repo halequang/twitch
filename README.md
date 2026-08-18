@@ -8,7 +8,7 @@ Skin pages are bundled as static assets.
 | Path         | Source                                | Description       |
 | ------------ | ------------------------------------- | ----------------- |
 | `/`          | `src/pages/index.astro`               | Landing page      |
-| `/game`      | `src/pages/game.astro`                | Member area — Google/Apple login, Steam rentals, mini-game |
+| `/thuegame/theisle` | `src/pages/thuegame/theisle.astro` | Member area — Google/Apple login, The Isle rentals, mini-game (old `/game` 301s here) |
 | `/admin`     | `src/pages/admin.astro`               | Shop admin — account pool + orders (ADMIN_EMAILS only) |
 | `/skins`     | `public/skins.html`                   | Full pack         |
 | `/skins2`    | `public/skins2.html`                  | Medium pack       |
@@ -63,7 +63,7 @@ After deploy, the Worker is live at the routes configured in `wrangler.toml`
 │   ├── layouts/Layout.astro
 │   ├── lib/                # Shared Worker + dev-server logic (advisor, auth)
 │   ├── pages/index.astro   # Landing page
-│   ├── pages/game.astro    # Member area behind Google login
+│   ├── pages/thuegame/     # Per-game rental pages (theisle.astro)
 │   └── styles/global.css
 ├── worker/index.js         # Cloudflare Worker entrypoint (routing + /api/*)
 ├── notion-content/         # Notion mirror archive (read-only reference)
@@ -114,9 +114,9 @@ The advice logic and product catalog live in **`src/lib/advisor.js`** (single
 source of truth, imported by both the Worker and the dev middleware) — keep the
 `CATALOG` there in sync with `src/components/PricingBanner.astro`.
 
-## Login (`/game`) — Google and Apple
+## Login (`/thuegame/theisle`) — Google and Apple
 
-`/game` (`src/pages/game.astro`) is a member area: signed out it shows
+`/thuegame/theisle` (`src/pages/thuegame/theisle.astro`) is a member area: signed out it shows
 **Sign in with Google** and **Sign in with Apple** buttons, signed in it shows
 the account and a mini game.
 
@@ -168,13 +168,13 @@ identifiers — the one we want is the **Services ID**, not the App ID:
    string is `APPLE_CLIENT_ID`.
 3. In that same panel register:
    - **Domains**: `fungamingvn.shop`
-   - **Return URLs**: `https://fungamingvn.shop/game` (must match
+   - **Return URLs**: `https://fungamingvn.shop/thuegame/theisle` (must match
      `APPLE_REDIRECT_URI` exactly)
 4. Put both in `wrangler.toml` under `[vars]`:
 
    ```toml
    APPLE_CLIENT_ID = "shop.fungamingvn.web"
-   APPLE_REDIRECT_URI = "https://fungamingvn.shop/game"
+   APPLE_REDIRECT_URI = "https://fungamingvn.shop/thuegame/theisle"
    ```
 
 Apple quirks worth knowing:
@@ -208,7 +208,7 @@ empty entry there disables that provider locally even when production has it set
 
 ## Steam account rentals (The Isle) via payOS
 
-The `/game` member area sells timed rentals of shop-owned Steam accounts. A
+The `/thuegame/theisle` member area sells timed rentals of shop-owned Steam accounts. A
 signed-in user picks a plan, pays through payOS (bank transfer / QR), and the
 account's login and password appear on the page with a countdown. When the
 rental expires the account returns to the pool automatically.
@@ -381,6 +381,20 @@ Safety rules built into the API (`src/lib/admin.js`), not just the UI:
   silently wipe a stored password. Clearing one deliberately is an explicit
   `null`. Blanking a plain text field (email, notes) does clear it.
 
+### Renaming a rental page
+
+The page path lives in **one** place — `path` on the game in
+`src/data/rental-plans.js`. The Worker route, the payOS return/cancel URLs and the
+Apple redirect URI all read from it, so they cannot drift apart.
+
+If you rename one, also:
+
+1. add the old path to `MOVED` in `worker/index.js` (a 301 that preserves the
+   query string) — payOS links created before the rename carry the old
+   `returnUrl`, and a paying customer must not hit a 404;
+2. update `APPLE_REDIRECT_URI` in `wrangler.toml`;
+3. update the **Return URL** on the Apple Services ID, which must match exactly.
+
 ## Expiry alerts (Telegram)
 
 When a rental ends the previous renter **still knows that Steam password**, so the
@@ -389,7 +403,7 @@ so that does not get missed.
 
 Detection runs on a **Cron Trigger** (`wrangler.toml` → `[triggers] crons`, every
 15 min) rather than piggybacking on traffic: expiry is otherwise only noticed when
-a customer happens to load `/game`, so a rental ending at 3am would go unnoticed.
+a customer happens to load the rental page, so a rental ending at 3am would go unnoticed.
 The scheduled handler sweeps lapsed rentals back into the pool, then announces
 whatever ended.
 

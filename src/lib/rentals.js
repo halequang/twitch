@@ -279,14 +279,18 @@ export async function createCheckout(env, { user, gameId = DEFAULT_GAME, planId,
     }
   }
 
+  // Where payOS sends the customer back. Comes from the game definition so a
+  // route rename cannot silently break returning payers.
+  const pagePath = GAMES[gameId]?.path || '/thuegame/theisle';
+
   let link;
   try {
     link = await createPaymentLink(env, {
       orderCode,
       amount: plan.amount,
       description: shortDescription(plan, Boolean(parent)),
-      returnUrl: `${origin}/game?rent=success&orderCode=${orderCode}`,
-      cancelUrl: `${origin}/game?rent=cancel&orderCode=${orderCode}`,
+      returnUrl: `${origin}${pagePath}?rent=success&orderCode=${orderCode}`,
+      cancelUrl: `${origin}${pagePath}?rent=cancel&orderCode=${orderCode}`,
       expiredAt: now() + 60 * 15,
       // Shown as a line item on the payOS-hosted page. The total must match
       // `amount`, so keep it a single row priced at the full amount.

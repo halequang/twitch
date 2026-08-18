@@ -13,7 +13,7 @@ binding = "ASSETS"
 [vars]
 GOOGLE_CLIENT_ID = "570711428687-avbounh9j2np09lls6td311u4es44dqf.apps.googleusercontent.com"
 APPLE_CLIENT_ID = ""
-APPLE_REDIRECT_URI = "https://fungamingvn.shop/game"
+APPLE_REDIRECT_URI = "https://fungamingvn.shop/thuegame/theisle"
 # Who may use /admin. Comma-separated: an email, or "provider:sub" for accounts
 # with no email (Apple private relay). FAILS CLOSED — leave it empty and the
 # admin panel is closed to everyone, including you.

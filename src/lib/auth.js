@@ -32,7 +32,7 @@ const PROVIDERS = {
   },
 };
 
-const DEFAULT_APPLE_REDIRECT_URI = 'https://fungamingvn.shop/game';
+const DEFAULT_APPLE_REDIRECT_URI = 'https://fungamingvn.shop/thuegame/theisle';
 
 export const COOKIE_NAME = 'fg_session';
 const SESSION_TTL = 60 * 60 * 24 * 7; // 7 days

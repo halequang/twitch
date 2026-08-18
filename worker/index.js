@@ -33,7 +33,7 @@ import { notifyExpiredRentals } from "../src/lib/notify.js";
 
 const ROUTES = {
   "/":          "/index.html",
-  "/game":      "/game.html",
+  "/thuegame/theisle": "/thuegame/theisle.html",
   "/admin":     "/admin.html",
   "/skins":     "/skins.html",
   "/skins2":    "/skins2.html",
@@ -47,6 +47,14 @@ const ROUTES = {
 // `/mail` and `/mail/foo` → https://mail.fungamingvn.shop and .../foo.
 const REDIRECTS = {
   "/mail": "https://mail.fungamingvn.shop",
+};
+
+// Renamed pages. Kept permanently rather than dropped: payOS payment links
+// created before the rename carry returnUrl=/game?rent=success&orderCode=...,
+// and a paying customer must not land on a 404. The query string is preserved so
+// the outcome still resolves.
+const MOVED = {
+  "/game": "/thuegame/theisle",
 };
 
 function json(data, status = 200) {
@@ -269,6 +277,11 @@ export default {
 
     if (path.startsWith(ADMIN_PREFIX)) {
       return handleAdmin(request, env, url, path);
+    }
+
+    const moved = MOVED[path];
+    if (moved) {
+      return Response.redirect(new URL(moved + url.search, url).toString(), 301);
     }
 
     for (const [prefix, dest] of Object.entries(REDIRECTS)) {

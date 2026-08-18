@@ -9,6 +9,9 @@
 export const GAMES = {
   'the-isle': {
     name: 'The Isle',
+    // The public page for this game. Defined here so the Worker route, the payOS
+    // return/cancel URLs and the Apple redirect URI cannot drift apart.
+    path: '/thuegame/theisle',
     kicker: 'Dịch vụ cho thuê',
     subtitle: 'Survival Dinosaur',
     blurb: 'Trải nghiệm cuộc sống khủng long chân thực',
