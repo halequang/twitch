@@ -14,7 +14,7 @@
  *                 ("me@shop.vn") or a provider-scoped id ("google:1234").
  */
 
-import { decryptSecret, encryptSecret } from './rentals.js';
+import { decryptSecret, encryptSecret, sweepExpiredRentals } from './rentals.js';
 import { DEFAULT_GAME } from '../data/rental-plans.js';
 import { pendingExpiryNotices, telegramConfigured } from './notify.js';
 
@@ -392,6 +392,9 @@ async function summary(env, actor) {
            (SELECT COUNT(*) FROM steam_accounts WHERE status = 'disabled') AS disabled,
            (SELECT COUNT(*) FROM orders WHERE status = 'active') AS activeRentals,
            (SELECT COUNT(*) FROM orders WHERE status = 'awaiting_stock') AS awaitingStock,
+           (SELECT COUNT(*) FROM orders WHERE status = 'active'
+              AND expires_at > strftime('%s','now')
+              AND expires_at <= strftime('%s','now') + 86400) AS expiringSoon,
            (SELECT COALESCE(SUM(amount), 0) FROM orders WHERE paid_at IS NOT NULL) AS revenue`
       ).first()) ?? {}
     );
@@ -401,7 +404,8 @@ async function summary(env, actor) {
   // shop-wide takings are not theirs to see.
   const ids = actor?.groupIds ?? [];
   if (!ids.length) {
-    return { accounts: 0, available: 0, rented: 0, sold: 0, disabled: 0, activeRentals: 0, awaitingStock: 0, revenue: 0 };
+    return { accounts: 0, available: 0, rented: 0, sold: 0, disabled: 0, activeRentals: 0,
+             awaitingStock: 0, expiringSoon: 0, revenue: 0 };
   }
   const list = ids.map(() => '?').join(', ');
   const row = await env.DB.prepare(
@@ -415,10 +419,14 @@ async function summary(env, actor) {
          WHERE a.group_id IN (${list}) AND o.status = 'active') AS activeRentals,
        (SELECT COUNT(*) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
          WHERE a.group_id IN (${list}) AND o.status = 'awaiting_stock') AS awaitingStock,
+       (SELECT COUNT(*) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
+         WHERE a.group_id IN (${list}) AND o.status = 'active'
+           AND o.expires_at > strftime('%s','now')
+           AND o.expires_at <= strftime('%s','now') + 86400) AS expiringSoon,
        (SELECT COALESCE(SUM(o.amount), 0) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
          WHERE a.group_id IN (${list}) AND o.paid_at IS NOT NULL) AS revenue`
   )
-    .bind(...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids)
+    .bind(...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids)
     .first();
   return row ?? {};
 }
@@ -580,9 +588,53 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
     return { status: 200, body: { orders: await listAllOrders(env, actor, query?.limit) } };
   }
 
+  // Rentals about to end, so the owner can rotate passwords / chase renewals
+  // before the account frees up.
+  if (path === '/api/admin/expiring' && method === 'GET') {
+    // Sweep first: without it a rental that lapsed a minute ago is still
+    // 'active' with expires_at in the past, so it would fall out of this list
+    // AND not yet be in /expired — invisible in both.
+    await sweepExpiredRentals(env.DB);
+
+    const hours = Math.min(Math.max(Number(query?.hours) || 24, 1), 24 * 14);
+    const until = now() + hours * 3600;
+    const where = scope(actor, 'a.group_id');
+    const rows = await env.DB.prepare(
+      `SELECT o.order_code, o.user_key, o.user_email, o.plan_id, o.hours, o.expires_at,
+              a.id AS account_id, a.login AS account_login, g.name AS group_name
+         FROM orders o
+         JOIN steam_accounts a ON a.id = o.account_id
+         LEFT JOIN account_groups g ON g.id = a.group_id
+        WHERE o.status = 'active' AND o.expires_at > ? AND o.expires_at <= ?${where.sql}
+        ORDER BY o.expires_at ASC
+        LIMIT 100`
+    )
+      .bind(now(), until, ...where.binds)
+      .all();
+
+    return {
+      status: 200,
+      body: {
+        hours,
+        expiring: (rows?.results ?? []).map((r) => ({
+          orderCode: r.order_code,
+          userEmail: r.user_email ?? null,
+          userKey: r.user_key,
+          planId: r.plan_id,
+          rentedHours: r.hours,
+          expiresAt: r.expires_at,
+          accountId: r.account_id,
+          accountLogin: r.account_login,
+          groupName: r.group_name ?? null,
+        })),
+      },
+    };
+  }
+
   // Rentals that ended and still need their Steam password rotated, scoped the
   // same way as everything else.
   if (path === '/api/admin/expired' && method === 'GET') {
+    await sweepExpiredRentals(env.DB);
     const where = scope(actor, 'a.group_id');
     const rows = await env.DB.prepare(
       `SELECT o.order_code, o.user_key, o.user_email, o.plan_id, o.hours, o.expires_at,

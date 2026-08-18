@@ -363,6 +363,9 @@ What it does:
 
 - **Accounts** — add, edit (rename, email, notes, status, rotate password),
   delete, and reveal a stored password on demand.
+- **Sắp hết hạn** — rentals ending within a selectable window (6h / 24h / 3d /
+  7d), soonest first, with under-an-hour flagged red. Lets you rotate passwords or
+  chase a renewal before the account frees itself. `GET /api/admin/expiring?hours=N`.
 - **Orders** — every order with customer, plan, amount, status, which login it
   holds, and timestamps.
 - **Summary** — pool counts, active rentals, orders awaiting stock, paid revenue.

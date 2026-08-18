@@ -133,6 +133,14 @@ async function sweepExpired(db) {
   return rows.length;
 }
 
+/**
+ * Public wrapper for the expiry sweep, so callers that only need state to be
+ * truthful (the admin panel) can run it without pretending to ask about stock.
+ */
+export async function sweepExpiredRentals(db) {
+  return sweepExpired(db);
+}
+
 export async function stockByGame(db, game = DEFAULT_GAME) {
   await sweepExpired(db);
   const row = await db

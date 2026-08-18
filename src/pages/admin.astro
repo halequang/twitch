@@ -28,43 +28,35 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
     <div class="stats" id="stats"></div>
 
-    <section id="ownerOnly" hidden>
-      <h2 class="head">Nhóm tài khoản</h2>
-      <form id="groupForm" class="card form">
-        <p class="form-title">Thêm nhóm</p>
-        <div class="grid">
-          <label>Tên nhóm <input name="name" required autocomplete="off" placeholder="Kho A" /></label>
-          <label>Ghi chú <input name="note" autocomplete="off" placeholder="Nhà cung cấp, lô hàng…" /></label>
-        </div>
-        <button type="submit" class="btn">Thêm nhóm</button>
-      </form>
+    <section id="expiringWrap" class="card soon" hidden>
+      <div class="soon-head">
+        <h2 class="head" style="margin:0">⏳ Sắp hết hạn</h2>
+        <label class="soon-window">Trong
+          <select id="expiringHours">
+            <option value="6">6 giờ</option>
+            <option value="24" selected>24 giờ</option>
+            <option value="72">3 ngày</option>
+            <option value="168">7 ngày</option>
+          </select>
+        </label>
+      </div>
       <div class="table-wrap">
         <table class="tbl">
-          <thead><tr><th>#</th><th>Tên</th><th>Ghi chú</th><th>Số tài khoản</th><th class="right">Thao tác</th></tr></thead>
-          <tbody id="groupsBody"></tbody>
+          <thead>
+            <tr>
+              <th>Còn lại</th><th>Tài khoản</th><th>Nhóm</th><th>Khách</th>
+              <th>Gói</th><th>Hết hạn lúc</th><th>Mã đơn</th>
+            </tr>
+          </thead>
+          <tbody id="expiringBody"></tbody>
         </table>
       </div>
-
-      <h2 class="head spaced">Quản trị viên</h2>
-      <form id="managerForm" class="card form">
-        <p class="form-title">Thêm / cập nhật quản trị viên</p>
-        <div class="grid">
-          <label>Email hoặc provider:sub
-            <input name="identity" required autocomplete="off" placeholder="an@shop.vn" />
-          </label>
-          <label>Tên gợi nhớ <input name="label" autocomplete="off" placeholder="An — kho A" /></label>
-        </div>
-        <p class="form-title">Nhóm được quản lý</p>
-        <div id="managerGroupPicks" class="picks"></div>
-        <button type="submit" class="btn">Lưu quản trị viên</button>
-      </form>
-      <div class="table-wrap">
-        <table class="tbl">
-          <thead><tr><th>#</th><th>Danh tính</th><th>Tên</th><th>Nhóm</th><th class="right">Thao tác</th></tr></thead>
-          <tbody id="managersBody"></tbody>
-        </table>
-      </div>
+      <p class="soon-note">
+        Sau khi hết hạn, tài khoản tự trả về kho — nhớ đổi mật khẩu Steam trước khi
+        cho thuê lại, vì khách cũ vẫn biết mật khẩu hiện tại.
+      </p>
     </section>
+
 
     <h2 class="head spaced">Kho tài khoản</h2>
 
@@ -113,6 +105,45 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
         <tbody id="ordersBody"></tbody>
       </table>
     </div>
+
+    <section id="ownerOnly" hidden>
+      <h2 class="head">Nhóm tài khoản</h2>
+      <form id="groupForm" class="card form">
+        <p class="form-title">Thêm nhóm</p>
+        <div class="grid">
+          <label>Tên nhóm <input name="name" required autocomplete="off" placeholder="Kho A" /></label>
+          <label>Ghi chú <input name="note" autocomplete="off" placeholder="Nhà cung cấp, lô hàng…" /></label>
+        </div>
+        <button type="submit" class="btn">Thêm nhóm</button>
+      </form>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead><tr><th>#</th><th>Tên</th><th>Ghi chú</th><th>Số tài khoản</th><th class="right">Thao tác</th></tr></thead>
+          <tbody id="groupsBody"></tbody>
+        </table>
+      </div>
+
+      <h2 class="head spaced">Quản trị viên</h2>
+      <form id="managerForm" class="card form">
+        <p class="form-title">Thêm / cập nhật quản trị viên</p>
+        <div class="grid">
+          <label>Email hoặc provider:sub
+            <input name="identity" required autocomplete="off" placeholder="an@shop.vn" />
+          </label>
+          <label>Tên gợi nhớ <input name="label" autocomplete="off" placeholder="An — kho A" /></label>
+        </div>
+        <p class="form-title">Nhóm được quản lý</p>
+        <div id="managerGroupPicks" class="picks"></div>
+        <button type="submit" class="btn">Lưu quản trị viên</button>
+      </form>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead><tr><th>#</th><th>Danh tính</th><th>Tên</th><th>Nhóm</th><th class="right">Thao tác</th></tr></thead>
+          <tbody id="managersBody"></tbody>
+        </table>
+      </div>
+    </section>
+
   </section>
 </Layout>
 
@@ -301,6 +332,49 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     box-shadow: 0 0 0 3px rgba(37, 99, 201, 0.15);
   }
 
+  .soon { border-left: 3px solid var(--ad-amber); }
+
+  .soon-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .soon-window {
+    margin-left: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 13px;
+    color: var(--ad-text-dim);
+  }
+
+  .soon-note {
+    margin-top: 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--ad-text-dim);
+  }
+
+  /* Rows are built by the script, hence :global. */
+  .soon :global(.left-badge) {
+    display: inline-block;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 999px;
+    white-space: nowrap;
+    background: var(--ad-amber-soft);
+    color: var(--ad-amber);
+  }
+
+  /* Under an hour is the one that needs attention now. */
+  .soon :global(.left-badge.urgent) { background: var(--ad-red-soft); color: var(--ad-red); }
+
   .picks {
     display: flex;
     flex-wrap: wrap;
@@ -322,6 +396,49 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
   .picks :global(input[type="checkbox"]) { width: 16px; height: 16px; }
 
   .table-wrap { overflow-x: auto; margin-bottom: 10px; }
+
+  .soon { border-left: 3px solid var(--ad-amber); }
+
+  .soon-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .soon-window {
+    margin-left: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 13px;
+    color: var(--ad-text-dim);
+  }
+
+  .soon-note {
+    margin-top: 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--ad-text-dim);
+  }
+
+  /* Rows are built by the script, hence :global. */
+  .soon :global(.left-badge) {
+    display: inline-block;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 999px;
+    white-space: nowrap;
+    background: var(--ad-amber-soft);
+    color: var(--ad-amber);
+  }
+
+  /* Under an hour is the one that needs attention now. */
+  .soon :global(.left-badge.urgent) { background: var(--ad-red-soft); color: var(--ad-red); }
 
   .picks {
     display: flex;
@@ -594,6 +711,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       [s.sold, 'Đã bán'],
       [s.disabled, 'Tạm khoá'],
       [s.activeRentals, 'Đơn đang chạy'],
+      [s.expiringSoon, 'Sắp hết hạn (24h)'],
       [s.awaitingStock, 'Chờ xử lý'],
       [fmtVnd(s.revenue), 'Doanh thu'],
     ];
@@ -715,6 +833,65 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     }
     select.value = current;
   }
+
+  function humanLeft(seconds) {
+    if (seconds <= 0) return 'hết hạn';
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    if (d > 0) return `${d} ngày ${h} giờ`;
+    if (h > 0) return `${h} giờ ${String(m).padStart(2, '0')} phút`;
+    return `${m} phút`;
+  }
+
+  function renderExpiring(rows, hours) {
+    const wrap = el('expiringWrap');
+    const body = el('expiringBody');
+    body.textContent = '';
+
+    // Hide the whole block when there is nothing to act on, rather than showing
+    // an empty table that reads like a problem.
+    if (!rows.length) {
+      wrap.hidden = true;
+      return;
+    }
+    wrap.hidden = false;
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    for (const r of rows) {
+      const tr = document.createElement('tr');
+      const left = r.expiresAt - nowSec;
+      const badge = document.createElement('span');
+      badge.className = 'left-badge' + (left <= 3600 ? ' urgent' : '');
+      badge.textContent = humanLeft(left);
+      cell(tr, badge);
+
+      const login = document.createElement('code');
+      login.textContent = r.accountLogin;
+      cell(tr, login);
+
+      cell(tr, r.groupName || '—');
+      cell(tr, r.userEmail || r.userKey);
+      cell(tr, `${r.planId} (${r.rentedHours}h)`);
+      cell(tr, fmtTime(r.expiresAt));
+      const code = document.createElement('code');
+      code.textContent = String(r.orderCode);
+      cell(tr, code);
+      body.appendChild(tr);
+    }
+  }
+
+  async function loadExpiring() {
+    const hours = el('expiringHours')?.value || 24;
+    try {
+      const data = await api('expiring?hours=' + hours);
+      renderExpiring(data.expiring, data.hours);
+    } catch {
+      el('expiringWrap').hidden = true;
+    }
+  }
+
+  el('expiringHours')?.addEventListener('change', loadExpiring);
 
   function renderGroups(groups) {
     GROUPS = groups;
@@ -1107,6 +1284,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       renderGroups(groups.groups);
       renderAccounts(accounts.accounts);
       renderOrders(orders.orders);
+      await loadExpiring();
       if (IS_OWNER) {
         try {
           renderManagers((await api('managers')).managers);
@@ -1121,6 +1299,12 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
   }
 
   el('refreshBtn').addEventListener('click', loadAll);
+
+  // The "còn lại" column is only correct at render time, so re-render it once a
+  // minute. Cheap: it re-fetches nothing unless a row actually lapses.
+  setInterval(() => {
+    if (!el('expiringWrap').hidden) loadExpiring();
+  }, 60_000);
 
   (async function boot() {
     let session;
