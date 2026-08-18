@@ -13,13 +13,16 @@
  *   node scripts/add-rental-account.mjs --file scripts/steam_accounts.txt [--remote]
  *
  *   Line format — fields separated by "----", optional trailing " -> note":
- *     login----password----email                        -> internal note
- *     login----password----email----emailPassword       -> internal note
+ *     login----password----email                                    -> note
+ *     login----password----email----emailPassword                   -> note
+ *     login----password----email----emailPassword----internalNote    -> note
  *
  *   The email and its password are stored for shop administration only; they are
  *   never returned to a renter (handing them over would give away the account
- *   permanently). The trailing note is likewise private — the renter-facing
- *   message is set with --note.
+ *   permanently). The 5th field and the trailing "-> note" are the same private
+ *   annotation written two ways — a flag like "red_flag" belongs there, and both
+ *   land in internal_note, which is never shown to a renter. The renter-facing
+ *   message is set with --note. If a line carries both, they are joined.
  *
  * Options:
  *   --login     <string>   Steam login (single mode)
@@ -107,16 +110,19 @@ export function parseAccountLine(rawLine) {
     .filter((f) => f.length > 0);
 
   if (fields.length < 2) return { error: 'need at least login----password' };
+  if (fields.length > 5) return { error: `unexpected extra field(s): ${fields.length} found, max 5` };
 
-  const [login, password, email, emailPassword] = fields;
-  if (fields.length > 4) return { error: `unexpected extra field(s): ${fields.length} found, max 4` };
+  const [login, password, email, emailPassword, noteField] = fields;
 
   return {
     login,
     password,
     email: email ?? null,
     emailPassword: emailPassword ?? null,
-    internalNote,
+    // A 5th field and a trailing "-> note" mean the same thing; keep both rather
+    // than letting one silently win, since each is someone's warning about the
+    // account. internal_note is admin-only, so nothing here reaches a renter.
+    internalNote: [noteField, internalNote].filter(Boolean).join(' · ') || null,
   };
 }
 
