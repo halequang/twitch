@@ -10,9 +10,19 @@ is generated per account, set via Steam's change-password flow, and recorded to
 
     steam_user|email|old_password|new_password|status|YYYY-MM-DD HH:MM:SS
 
-If Steam asks for an email verification code, it is fetched automatically when the
-optional refresh_token|client_id columns are present (via ReadMailGraph, like
-steam_register_v2); otherwise the code step pauses for you to handle it.
+Email verification codes are read automatically, tried in this order:
+
+  1. the fungamingtool /api/read-code endpoint (scripts/mail_code_client.py).
+     Needs MAIL_API_KEY (env, or TWITCH_DIR/.dev.vars) matching that Worker's
+     secret. Works without outlook tokens because the server looks the mailbox up
+     by email — which is what makes --db mode viable, since D1 stores no tokens.
+  2. Microsoft Graph directly, if the account carries refresh_token|client_id.
+  3. a manual prompt.
+
+That endpoint returns "the newest email carrying a code" with no timestamp, so
+the code present BEFORE the send is snapshotted and poll_new_code waits for a
+different one. Steam codes are single-use: submitting a stale one just burns the
+attempt and fails confusingly.
 
 Flow (all on help.steampowered.com): log in -> open the change-password wizard
 -> click "Email an account verification code" -> read the emailed code (via the
@@ -196,6 +206,67 @@ def _load_enc_key():
             m = re.match(r"\s*(?:export\s+)?ACCOUNT_ENC_KEY\s*=\s*(.+)", line)
             if m:
                 return m.group(1).strip().strip('"').strip("'")
+    return ""
+
+
+def _load_mail_api_key():
+    """MAIL_API_KEY from the environment, else from TWITCH_DIR/.dev.vars.
+
+    Same lookup as _load_enc_key so the key lives in one gitignored place rather
+    than being pasted into this file."""
+    if os.environ.get("MAIL_API_KEY"):
+        return os.environ["MAIL_API_KEY"]
+    path = os.path.join(TWITCH_DIR, ".dev.vars")
+    if os.path.exists(path):
+        for line in open(path, "r", encoding="utf-8"):
+            m = re.match(r"\s*(?:export\s+)?MAIL_API_KEY\s*=\s*(.+)", line)
+            if m:
+                return m.group(1).strip().strip('"').strip("'")
+    return ""
+
+
+def _read_code_api(acc):
+    """One call to the fungamingtool /api/read-code endpoint.
+
+    Returns the newest code in the mailbox, or "" if there is none / the call
+    fails. Credentials are optional: with refresh_token+client_id it reads
+    statelessly, otherwise the server looks the account up by email — which is
+    what makes this work in --db mode, where D1 stores no outlook tokens.
+    """
+    key = _load_mail_api_key()
+    if not key:
+        return ""
+    os.environ["MAIL_API_KEY"] = key
+    try:
+        from mail_code_client import read_code
+    except Exception as e:
+        print(f"  mail_code_client unavailable: {e}")
+        return ""
+    try:
+        return read_code(acc.get("email", ""),
+                         acc.get("refresh_token") or None,
+                         acc.get("client_id") or None) or ""
+    except Exception as e:
+        print(f"  [{acc.get('steam_user')}] read-code API: {e}")
+        return ""
+
+
+def poll_new_code(acc, before_code, max_wait=GUARD_CODE_WAIT_SEC,
+                  poll_interval=GUARD_POLL_INTERVAL_SEC):
+    """Wait for a code that is NOT the one already sitting in the mailbox.
+
+    /api/read-code returns "the newest email carrying a code" with no timestamp,
+    so a plain call can hand back the code from a PREVIOUS request. Steam codes
+    are single-use, so submitting a stale one just burns the attempt and fails
+    confusingly. Snapshotting before the send and waiting for a change is what
+    makes this reliable."""
+    label = acc.get("steam_user")
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        code = _read_code_api(acc)
+        if code and code != before_code:
+            return code
+        time.sleep(poll_interval)
     return ""
 
 
@@ -556,6 +627,9 @@ def steam_login(driver, acc):
         pass_input.clear()
         pass_input.send_keys(password)
         print(f"  [{label}] entered credentials")
+        # Snapshot before submitting: Steam Guard may email a code, and we must
+        # not resubmit one left over from an earlier attempt.
+        guard_before = _read_code_api(acc) if _load_mail_api_key() else ""
         submit_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         pass_input.send_keys(Keys.ENTER)
         print(f"  [{label}] submitted login")
@@ -569,15 +643,24 @@ def steam_login(driver, acc):
 
         if _is_steam_guard_prompt(driver):
             code = None
-            if acc.get("refresh_token") and acc.get("client_id"):
-                print(f"  [{label}] Steam Guard prompt — polling {acc['email']} for code...")
+            if _load_mail_api_key():
+                print(f"  [{label}] Steam Guard prompt — asking /api/read-code for {acc['email']}...")
+                # `guard_before` was snapshotted before the login was submitted.
+                code = poll_new_code(acc, guard_before) or None
+            if not code and acc.get("refresh_token") and acc.get("client_id"):
+                print(f"  [{label}] Steam Guard prompt — polling Graph for code...")
                 try:
                     code = asyncio.run(_fetch_steam_guard_code(
                         acc["email"], acc["refresh_token"], acc["client_id"], submit_iso))
                 except Exception as err:
                     print(f"  [{label}] Guard code fetch failed: {err}")
             if not code:
-                print(f"  [{label}] Steam Guard code unavailable (need refresh_token|client_id).")
+                try:
+                    code = input(f"  [{label}] enter the Steam Guard code sent to {acc['email']}: ").strip() or None
+                except EOFError:
+                    code = None
+            if not code:
+                print(f"  [{label}] Steam Guard code unavailable.")
                 return False
             print(f"  [{label}] entering Steam Guard code {code}...")
             if not _enter_steam_guard_code(driver, code):
@@ -630,6 +713,12 @@ def change_password(driver, acc, old_pass, new_pass):
             pass
         time.sleep(random.uniform(1.0, 2.0))
 
+        # Snapshot whatever code is already in the mailbox BEFORE asking Steam to
+        # send a new one, so poll_new_code can tell the new mail from the old.
+        before_code = _read_code_api(acc)
+        if before_code:
+            print(f"  [{label}] mailbox already holds code {before_code} — will wait for a different one")
+
         # Step 1: click "Email an account verification code to <email>" — an <a>
         # linking to the EnterCode page; navigating there makes Steam email the code.
         submit_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -655,16 +744,27 @@ def change_password(driver, acc, old_pass, new_pass):
             _dump_page(driver, label, "entercode")
             return "NO_ENTERCODE"
 
+        # Preferred: the fungamingtool /api/read-code endpoint. It reuses the same
+        # per-provider code extraction as the /mail UI, and works without outlook
+        # tokens because the server can look the mailbox up by email.
         code = ""
-        if acc.get("refresh_token") and acc.get("client_id"):
-            print(f"  [{label}] polling {acc['email']} for the verification code...")
+        if _load_mail_api_key():
+            print(f"  [{label}] waiting on /api/read-code for {acc['email']}...")
+            code = poll_new_code(acc, before_code)
+            if code:
+                print(f"  [{label}] got code {code} from the mail API")
+
+        # Fallback: read Graph directly, if this account carries inline tokens.
+        if not code and acc.get("refresh_token") and acc.get("client_id"):
+            print(f"  [{label}] mail API had nothing; polling Graph directly...")
             try:
                 code = asyncio.run(_fetch_steam_guard_code(
                     acc["email"], acc["refresh_token"], acc["client_id"], submit_iso)) or ""
             except Exception as err:
                 print(f"  [{label}] code fetch failed: {err}")
+
         if not code:
-            # Manual fallback (no token, or auto-read timed out).
+            # Last resort: a human reads the mailbox.
             try:
                 code = input(f"  [{label}] enter the code emailed to {acc['email']}: ").strip()
             except EOFError:
