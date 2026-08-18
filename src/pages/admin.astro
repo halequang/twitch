@@ -403,6 +403,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
   .tbl :global(.pill.active)    { background: var(--ad-green-soft); color: var(--ad-green); }
   .tbl :global(.pill.rented)    { background: var(--ad-amber-soft); color: var(--ad-amber); }
   .tbl :global(.pill.pending)   { background: var(--ad-accent-soft); color: var(--ad-accent); }
+  .tbl :global(.pill.sold)      { background: #ede9fe; color: #5b32b8; }
   .tbl :global(.pill.disabled)  { background: var(--ad-line-soft); color: var(--ad-text-mute); }
   .tbl :global(.pill.expired)   { background: var(--ad-line-soft); color: var(--ad-text-mute); }
   .tbl :global(.pill.cancelled) { background: var(--ad-line-soft); color: var(--ad-text-mute); }
@@ -590,6 +591,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       [s.accounts, 'Tài khoản'],
       [s.available, 'Còn trống'],
       [s.rented, 'Đang thuê'],
+      [s.sold, 'Đã bán'],
       [s.disabled, 'Tạm khoá'],
       [s.activeRentals, 'Đơn đang chạy'],
       [s.awaitingStock, 'Chờ xử lý'],
@@ -918,7 +920,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     statusLabel.textContent = 'Trạng thái';
     const select = document.createElement('select');
     select.name = 'status';
-    for (const value of ['available', 'rented', 'disabled']) {
+    for (const value of ['available', 'rented', 'sold', 'disabled']) {
       const option = document.createElement('option');
       option.value = value;
       option.textContent = value;

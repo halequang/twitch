@@ -395,6 +395,13 @@ Two deliberate choices in the scoping:
 - Rows outside a manager's groups answer **404, not 403** — a 403 would confirm
   the account exists and leak another group's inventory.
 
+Account statuses: **available** (in the pool), **rented** (out with a customer),
+**sold** (left the rental business for good), **disabled** (parked). Every
+allocation query filters on `available`, so `sold` and `disabled` accounts are
+never rented, counted as stock, or reclaimed by an extension — and
+`steam_change_password.py` leaves those two states alone rather than returning
+them to the pool after a rotation.
+
 Safety rules built into the API (`src/lib/admin.js`), not just the UI:
 
 - Listings **never** include passwords, encrypted or not. Revealing one is a

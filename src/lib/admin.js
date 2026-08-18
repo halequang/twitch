@@ -246,10 +246,13 @@ async function updateAccount(env, actor, id, body) {
 
   if (body?.status !== undefined) {
     const status = String(body.status);
-    if (!['available', 'rented', 'disabled'].includes(status)) return bad('bad_status');
-    // Freeing an account while a rental still holds it would hand the same login
-    // to a second customer.
-    if (status === 'available' && account.status === 'rented') {
+    // 'sold' means gone for good — the account left the rental business. Every
+    // allocation query filters on 'available', so a sold account is never rented,
+    // counted as stock, or reclaimed by an extension.
+    if (!['available', 'rented', 'sold', 'disabled'].includes(status)) return bad('bad_status');
+    // Moving an account OUT of 'rented' while a rental still holds it would hand
+    // the same login to a second customer, or sell it from under the renter.
+    if (status !== 'rented' && account.status === 'rented') {
       const live = await env.DB.prepare(
         `SELECT order_code FROM orders WHERE account_id = ? AND status = 'active'`
       )
@@ -385,6 +388,7 @@ async function summary(env, actor) {
            (SELECT COUNT(*) FROM steam_accounts) AS accounts,
            (SELECT COUNT(*) FROM steam_accounts WHERE status = 'available') AS available,
            (SELECT COUNT(*) FROM steam_accounts WHERE status = 'rented') AS rented,
+           (SELECT COUNT(*) FROM steam_accounts WHERE status = 'sold') AS sold,
            (SELECT COUNT(*) FROM steam_accounts WHERE status = 'disabled') AS disabled,
            (SELECT COUNT(*) FROM orders WHERE status = 'active') AS activeRentals,
            (SELECT COUNT(*) FROM orders WHERE status = 'awaiting_stock') AS awaitingStock,
@@ -397,7 +401,7 @@ async function summary(env, actor) {
   // shop-wide takings are not theirs to see.
   const ids = actor?.groupIds ?? [];
   if (!ids.length) {
-    return { accounts: 0, available: 0, rented: 0, disabled: 0, activeRentals: 0, awaitingStock: 0, revenue: 0 };
+    return { accounts: 0, available: 0, rented: 0, sold: 0, disabled: 0, activeRentals: 0, awaitingStock: 0, revenue: 0 };
   }
   const list = ids.map(() => '?').join(', ');
   const row = await env.DB.prepare(
@@ -405,6 +409,7 @@ async function summary(env, actor) {
        (SELECT COUNT(*) FROM steam_accounts WHERE group_id IN (${list})) AS accounts,
        (SELECT COUNT(*) FROM steam_accounts WHERE group_id IN (${list}) AND status = 'available') AS available,
        (SELECT COUNT(*) FROM steam_accounts WHERE group_id IN (${list}) AND status = 'rented') AS rented,
+       (SELECT COUNT(*) FROM steam_accounts WHERE group_id IN (${list}) AND status = 'sold') AS sold,
        (SELECT COUNT(*) FROM steam_accounts WHERE group_id IN (${list}) AND status = 'disabled') AS disabled,
        (SELECT COUNT(*) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
          WHERE a.group_id IN (${list}) AND o.status = 'active') AS activeRentals,
@@ -413,7 +418,7 @@ async function summary(env, actor) {
        (SELECT COALESCE(SUM(o.amount), 0) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
          WHERE a.group_id IN (${list}) AND o.paid_at IS NOT NULL) AS revenue`
   )
-    .bind(...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids)
+    .bind(...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids)
     .first();
   return row ?? {};
 }

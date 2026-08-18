@@ -12,7 +12,13 @@ CREATE TABLE IF NOT EXISTS steam_accounts (
   login        TEXT    NOT NULL,
   password_enc TEXT    NOT NULL,
   note         TEXT,
-  -- available | rented | disabled
+  -- available | rented | sold | disabled
+  --   available : in the rental pool
+  --   rented    : out with a customer right now
+  --   sold      : left the rental business for good (never allocated again)
+  --   disabled  : parked, temporarily not for rent
+  -- Free text on purpose (no CHECK), so adding a state needs no migration; every
+  -- allocation query filters on 'available', so a new state is safe by default.
   status       TEXT    NOT NULL DEFAULT 'available',
   created_at   INTEGER NOT NULL
 );

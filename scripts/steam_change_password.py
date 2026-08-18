@@ -42,10 +42,13 @@ ENCRYPTED password back to steam_accounts.password_enc. --remote hits production
 via _d1crypto.mjs (byte-identical to the worker's AES-GCM).
 
 On a successful change the account is also set back to status 'available', so the
-rotated login re-enters the rental pool. One exception, enforced in SQL: an
-account still held by an ACTIVE rental keeps its current status, so a rotation can
-never hand the same login to a second customer while the first still has it —
-that case is reported as OK_STILL_RENTED.
+rotated login re-enters the rental pool. Enforced in SQL, three states survive a
+rotation untouched:
+  - held by an ACTIVE rental -> reported as OK_STILL_RENTED, so a rotation can
+    never hand the same login to a second customer while the first still has it;
+  - 'sold' or 'disabled' -> reported as OK_KEPT_SOLD / OK_KEPT_DISABLED, since
+    flipping those to 'available' would put an account that left the rental
+    business back up for rent.
 
 --account <login>[,<login>...] forces a password change for those specific
 accounts (bypassing the rental-over selection and the already-done skip). In
@@ -364,12 +367,20 @@ def update_db_password(db_id, new_pass, remote, key):
     The b64url ciphertext is quote-safe so it's inlined into the SQL.
     Returns the account's resulting status."""
     enc = _crypto("enc", new_pass, key)
+    # Return to the pool ONLY from a state that belongs to the pool. Two states
+    # must survive a rotation untouched:
+    #   'rented'          - a customer still holds it (would double-book)
+    #   'sold'/'disabled' - deliberately out of the rental business; flipping
+    #                       these to 'available' would silently put a sold or
+    #                       retired account back up for rent.
     rows = _d1(
         "UPDATE steam_accounts SET "
         f"password_enc = '{enc}', "
-        "status = CASE WHEN EXISTS ("
-        "  SELECT 1 FROM orders WHERE account_id = steam_accounts.id AND status = 'active'"
-        ") THEN status ELSE 'available' END "
+        "status = CASE "
+        "  WHEN status IN ('sold', 'disabled') THEN status "
+        "  WHEN EXISTS (SELECT 1 FROM orders WHERE account_id = steam_accounts.id "
+        "               AND status = 'active') THEN status "
+        "  ELSE 'available' END "
         f"WHERE id = {int(db_id)} "
         "RETURNING status",
         remote)
@@ -992,7 +1003,13 @@ def main():
                     new_status = update_db_password(acc["db_id"], new_pass, remote, enc_key)
                     print(f"  [{user}] DB password_enc updated, status={new_status or '?'} "
                           f"(id={acc['db_id']}).")
-                    if new_status and new_status != "available":
+                    if new_status in ("sold", "disabled"):
+                        # Only reachable via --account. Left alone on purpose: it
+                        # is not part of the rental pool any more.
+                        print(f"  ℹ️  [{user}] password rotated but status kept as "
+                              f"'{new_status}' — not returned to the rental pool.")
+                        status = f"OK_KEPT_{new_status.upper()}"
+                    elif new_status and new_status != "available":
                         # Only reachable via --account: the account is still out on
                         # a live rental, so it was deliberately NOT returned to the
                         # pool. The renter is now holding a dead password.
