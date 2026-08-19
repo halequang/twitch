@@ -584,6 +584,23 @@ Behaviour worth knowing:
 - `GET /api/admin/expired` lists the same queue, so the panel shows what needs
   rotating even with no bot configured.
 
+## Which account a customer gets
+
+`claimAccount` in `src/lib/rentals.js` picks in this order, most specific first:
+
+1. **Reserved for that customer** (`reserved_for` matches their email) — it was set
+   aside for them by name.
+2. **Stock no manager can claim** — ungrouped, or in a group with no manager
+   attached. The shop's own stock earns before a manager's does, so it is spent
+   first and theirs is held back until it runs out.
+3. **Lowest id**, so the pool cycles predictably.
+
+This delays manager stock, it does not withhold it: once the shop's own accounts
+are all out, manager-owned ones are allocated normally.
+
+Note that allocation now reads `manager_groups`, so migration `0005` is required
+for renting to work at all — not just for the admin panel.
+
 ## Fixing an order by hand
 
 `PATCH /api/admin/orders/<orderCode>` with `{status?, accountId?, hours?, force?}`,

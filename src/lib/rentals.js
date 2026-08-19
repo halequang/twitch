@@ -177,14 +177,28 @@ export async function stockByGame(db, game = DEFAULT_GAME, forEmail = null) {
  * reopen the race the single statement exists to close.
  */
 async function claimAccount(db, game, forEmail = null) {
+  // Pick order, most specific first:
+  //   1. reserved for this customer — it was set aside for them by name
+  //   2. stock no manager can claim: ungrouped, or in a group with no manager
+  //      attached. The shop's own stock earns before a manager's does, so it is
+  //      spent first and theirs is held back until it runs out.
+  //   3. lowest id, so the pool cycles predictably
+  //
+  // Aliased as `s` because the correlated EXISTS has to point at the row being
+  // considered, not at the table the UPDATE is walking.
   const row = await db
     .prepare(
       `UPDATE steam_accounts SET status = 'rented'
         WHERE id = (
-          SELECT id FROM steam_accounts
-           WHERE game = ? AND status = 'available'
-             AND (reserved_for IS NULL OR lower(reserved_for) = lower(?))
-           ORDER BY CASE WHEN reserved_for IS NULL THEN 1 ELSE 0 END, id
+          SELECT s.id FROM steam_accounts s
+           WHERE s.game = ? AND s.status = 'available'
+             AND (s.reserved_for IS NULL OR lower(s.reserved_for) = lower(?))
+           ORDER BY
+             CASE WHEN s.reserved_for IS NULL THEN 1 ELSE 0 END,
+             CASE WHEN EXISTS (
+               SELECT 1 FROM manager_groups mg WHERE mg.group_id = s.group_id
+             ) THEN 1 ELSE 0 END,
+             s.id
            LIMIT 1
         )
         RETURNING id`
