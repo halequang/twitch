@@ -198,10 +198,14 @@ function probeAccount(login, password, timeoutMs) {
       resolve(out);
     };
 
-    // Both facts arrive as separate pushes after login, so wait briefly for the
-    // second rather than returning the moment the first lands.
-    const settle = () => {
-      if (out.steamId && out.limitations) setTimeout(finish, 1500);
+    // Both facts arrive as separate pushes after login. Give limitations a real
+    // grace period once logged in — returning early is what made a verdict flip
+    // between runs — and only shorten it once the push has actually landed.
+    let grace = null;
+    const settle = (ms) => {
+      if (!out.steamId) return;
+      if (grace) clearTimeout(grace);
+      grace = setTimeout(finish, ms);
     };
 
     const timer = setTimeout(() => {
@@ -230,7 +234,7 @@ function probeAccount(login, password, timeoutMs) {
       sawLogin = true;
       out.steamId = client.steamID?.getSteamID64() ?? null;
       out.ok = true;
-      settle();
+      settle(8000);
     });
 
     client.on('accountLimitations', (limited, communityBanned, locked, canInviteFriends) => {
@@ -240,7 +244,7 @@ function probeAccount(login, password, timeoutMs) {
         locked: !!locked,
         canInviteFriends: !!canInviteFriends,
       };
-      settle();
+      settle(1500);
     });
 
     client.on('vacBans', (numBans, appids) => {
@@ -364,7 +368,17 @@ if (!args.noLogin && encKey) {
     }
     const p = (await fetchPlayerBans([probe.steamId], apiKey)).get(String(probe.steamId)) || null;
     const flags = banFlags({ ...probe, publicBans: p });
-    results.push({ account: a, steamId: probe.steamId, flags, checked: true, source: 'login' });
+    // Finding a problem is conclusive. Finding none is only conclusive if Steam
+    // actually reported the limitations — otherwise `locked` and `limited` were
+    // never looked at, and "clean" would be a guess dressed up as a result.
+    const conclusive = flags.length > 0 || probe.limitations != null;
+    results.push({
+      account: a,
+      steamId: probe.steamId,
+      flags,
+      checked: conclusive,
+      source: conclusive ? 'login' : 'login ok, but Steam never reported limitations',
+    });
   }
 } else if (!encKey) {
   console.log('[key] ACCOUNT_ENC_KEY unset — cannot decrypt passwords, so no logins were attempted.');
