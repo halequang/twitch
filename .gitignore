@@ -12,8 +12,10 @@ pending-images
 .env.local
 
 # Plaintext Steam credentials for the rental pool — never commit these.
-scripts/steam_accounts.txt
-scripts/*accounts*.txt
+# Unanchored on purpose: a copy saved to the repo root slipped past the old
+# scripts/-prefixed patterns, one `git add -A` away from Steam passwords in the
+# history, which is not something you can take back.
+*accounts*.txt
 *.credentials.txt
 
 # Local credential stores — never commit.
