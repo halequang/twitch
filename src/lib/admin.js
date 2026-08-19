@@ -104,6 +104,10 @@ function mayTouchAccount(actor, account) {
 
 const now = () => Math.floor(Date.now() / 1000);
 
+// Statuses an admin may set by hand. 'pending' is deliberately absent: that is
+// payOS's to own, and forcing an order back to it would orphan a paid payment.
+const ORDER_STATUSES = ['active', 'expired', 'cancelled', 'awaiting_stock'];
+
 function bad(error, status = 400, extra = {}) {
   return { status, body: { error, ...extra } };
 }
@@ -126,7 +130,7 @@ function cleanText(value, max = 200) {
 // Deliberately omits password_enc / email_password_enc: a listing must never
 // carry credentials, encrypted or not.
 const ACCOUNT_COLUMNS = `
-  a.id, a.game, a.login, a.email, a.note, a.internal_note, a.status, a.created_at,
+  a.id, a.game, a.login, a.email, a.note, a.internal_note, a.status, a.ban_state, a.created_at,
   a.reserved_for,
   (a.email_password_enc IS NOT NULL) AS has_email_password,
   a.group_id, g.name AS group_name,
@@ -155,6 +159,7 @@ async function listAccounts(env, actor) {
     note: r.note ?? null,
     internalNote: r.internal_note ?? null,
     status: r.status,
+    banState: r.ban_state ?? null,
     createdAt: r.created_at,
     reservedFor: r.reserved_for ?? null,
     hasEmailPassword: Boolean(r.has_email_password),
@@ -600,6 +605,162 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
 
   if (path === '/api/admin/summary' && method === 'GET') {
     return { status: 200, body: await summary(env, actor) };
+  }
+
+  // Fix an order by hand: change its status, and/or put a specific account on it.
+  //
+  // Three real situations had no remedy in the panel before: an order paid when the
+  // pool was empty (awaiting_stock, account_id NULL), a customer holding an account
+  // that later turned out to be banned, and accounts left 'rented' with no order
+  // behind them. All three are "reassign or restate", which is what this does.
+  const orderPatch = /^\/api\/admin\/orders\/(\d+)$/.exec(path);
+  if (orderPatch && method === 'PATCH') {
+    const code = Number(orderPatch[1]);
+    const order = await env.DB.prepare(
+      `SELECT o.*, a.group_id AS account_group, a.login AS account_login, a.status AS account_status
+         FROM orders o
+         LEFT JOIN steam_accounts a ON a.id = o.account_id
+        WHERE o.order_code = ?`
+    )
+      .bind(code)
+      .first();
+    if (!order) return bad('unknown_order', 404);
+
+    // An order already holding one of the actor's accounts is theirs to fix. One
+    // holding nothing is only theirs if they are assigning an account they own,
+    // which is checked below — otherwise unassigned orders would be a hole in the
+    // scoping.
+    const ownsCurrent = order.account_id != null && mayTouchAccount(actor, { group_id: order.account_group });
+    if (order.account_id != null && !ownsCurrent) return bad('forbidden', 403);
+
+    const wantStatus = body?.status === undefined ? null : String(body.status);
+    if (wantStatus !== null && !ORDER_STATUSES.includes(wantStatus)) {
+      return bad('bad_status', 400, { allowed: ORDER_STATUSES });
+    }
+    const wantAccount = body?.accountId === undefined || body.accountId === null
+      ? null
+      : Number(body.accountId);
+    if (wantAccount !== null && !Number.isFinite(wantAccount)) return bad('bad_account', 400);
+    if (wantStatus === null && wantAccount === null) return bad('nothing_to_do', 400);
+
+    const ts = now();
+    const statements = [];
+    let assigned = null;
+
+    if (wantAccount !== null && wantAccount !== order.account_id) {
+      const account = await env.DB.prepare(
+        `SELECT id, login, game, status, group_id, ban_state FROM steam_accounts WHERE id = ?`
+      )
+        .bind(wantAccount)
+        .first();
+      if (!account) return bad('unknown_account', 404);
+      if (!mayTouchAccount(actor, account)) return bad('forbidden', 403);
+      if (account.game !== order.game) return bad('wrong_game', 409, { game: account.game });
+
+      // Today this shop handed two customers accounts that were locked by Steam.
+      // Refuse by default; --force stays available for a deliberate override.
+      if (account.ban_state === 'banned' && !body?.force) {
+        return bad('account_banned', 409, { login: account.login, hint: 'pass force: true to override' });
+      }
+
+      // Claim it the same way checkout does — a nested SELECT inside one UPDATE —
+      // so two admins (or an admin and a paying customer) cannot both take it.
+      const claimed = await env.DB.prepare(
+        `UPDATE steam_accounts SET status = 'rented'
+          WHERE id = (SELECT id FROM steam_accounts
+                       WHERE id = ? AND status = 'available'
+                         AND NOT EXISTS (SELECT 1 FROM orders o
+                                          WHERE o.account_id = steam_accounts.id AND o.status = 'active'))
+          RETURNING id, login`
+      )
+        .bind(wantAccount)
+        .first();
+      if (!claimed) return bad('account_unavailable', 409, { status: account.status });
+      assigned = claimed;
+
+      // Hand the previous one back, but only if nothing else is live on it.
+      if (order.account_id != null) {
+        statements.push(
+          env.DB.prepare(
+            `UPDATE steam_accounts SET status = 'available'
+              WHERE id = ? AND status = 'rented'
+                AND NOT EXISTS (SELECT 1 FROM orders o
+                                 WHERE o.account_id = ? AND o.status = 'active' AND o.order_code <> ?)`
+          ).bind(order.account_id, order.account_id, code)
+        );
+      }
+      statements.push(
+        env.DB.prepare(`UPDATE orders SET account_id = ? WHERE order_code = ?`).bind(wantAccount, code)
+      );
+    }
+
+    const finalAccount = wantAccount !== null ? wantAccount : order.account_id;
+
+    if (wantStatus !== null && wantStatus !== order.status) {
+      if (wantStatus === 'active') {
+        // Activating without an account would tell the customer their rental is
+        // ready and then show them nothing.
+        if (finalAccount == null) return bad('needs_account', 409);
+        // A paid-but-unstocked order has no expires_at, and one that lapsed has a
+        // past one. Either way the clock starts now: the customer has been waiting,
+        // so charging them for time they could not use is not on.
+        const hours = Math.min(Math.max(Number(body?.hours) || order.hours || 24, 1), 24 * 90);
+        const expiresAt =
+          order.expires_at && order.expires_at > ts && order.status === 'active'
+            ? order.expires_at
+            : ts + hours * 3600;
+        statements.push(
+          env.DB.prepare(
+            `UPDATE orders SET status = 'active', expires_at = ?, paid_at = COALESCE(paid_at, ?)
+              WHERE order_code = ?`
+          ).bind(expiresAt, ts, code)
+        );
+        // A fresh delivery is a fresh reminder cycle; the old marker would silence it.
+        statements.push(
+          env.DB.prepare(`UPDATE orders SET reminder_sent_at = NULL WHERE order_code = ?`).bind(code)
+        );
+      } else {
+        statements.push(
+          env.DB.prepare(`UPDATE orders SET status = ? WHERE order_code = ?`).bind(wantStatus, code)
+        );
+        // Ending an order releases its account unless it was just reassigned away.
+        if (finalAccount != null && wantAccount === null) {
+          statements.push(
+            env.DB.prepare(
+              `UPDATE steam_accounts SET status = 'available'
+                WHERE id = ? AND status = 'rented'
+                  AND NOT EXISTS (SELECT 1 FROM orders o
+                                   WHERE o.account_id = ? AND o.status = 'active' AND o.order_code <> ?)`
+            ).bind(finalAccount, finalAccount, code)
+          );
+        }
+      }
+    }
+
+    if (statements.length) await env.DB.batch(statements);
+
+    const after = await env.DB.prepare(
+      `SELECT o.order_code, o.status, o.expires_at, o.account_id, a.login AS account_login
+         FROM orders o LEFT JOIN steam_accounts a ON a.id = o.account_id
+        WHERE o.order_code = ?`
+    )
+      .bind(code)
+      .first();
+
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        order: {
+          orderCode: after.order_code,
+          status: after.status,
+          expiresAt: after.expires_at ?? null,
+          accountId: after.account_id ?? null,
+          accountLogin: after.account_login ?? null,
+        },
+        assignedLogin: assigned?.login ?? null,
+      },
+    };
   }
 
   if (path === '/api/admin/orders' && method === 'GET') {

@@ -123,6 +123,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
           <tr>
             <th>Mã đơn</th><th>Khách</th><th>Gói</th><th>Số tiền</th>
             <th>Trạng thái</th><th>Tài khoản</th><th>Tạo lúc</th><th>Hết hạn</th>
+            <th class="right">Sửa</th>
           </tr>
         </thead>
         <tbody id="ordersBody"></tbody>
@@ -359,6 +360,34 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
   /* Red, not amber: an expiry is scheduled, a report is somebody stuck now. */
   .reports { border-left: 3px solid var(--ad-red); }
+
+  /* Inline order editor. Built in JS, hence :global() on its innards. */
+  .card :global(tr.order-editor) > td { background: var(--ad-accent-soft); }
+
+  .card :global(.oe-form) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: end;
+    padding: 6px 2px;
+  }
+
+  .card :global(.oe-form label) {
+    display: grid;
+    gap: 4px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ad-text-mute);
+  }
+
+  .card :global(.oe-form select),
+  .card :global(.oe-form input) {
+    min-width: 160px;
+    padding: 6px 8px;
+    font: inherit;
+    font-size: 13px;
+  }
 
   /* Rows and cells are built in JS, hence :global(). */
   .reports :global(td) { vertical-align: top; }
@@ -721,6 +750,9 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
   let IS_OWNER = false;
   let GROUPS = [];
+  // Kept so the order editor can offer a "set this account" picker without
+  // re-fetching the pool every time a row is opened.
+  let ACCOUNTS = [];
 
   const a_groupId = (account) => (account.groupId == null ? null : Number(account.groupId));
 
@@ -770,6 +802,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
   }
 
   function renderAccounts(accounts) {
+    ACCOUNTS = accounts;
     const body = el('accountsBody');
     body.textContent = '';
     if (!accounts.length) {
@@ -843,7 +876,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     if (!orders.length) {
       const tr = document.createElement('tr');
       const td = cell(tr, 'Chưa có đơn nào.');
-      td.colSpan = 8;
+      td.colSpan = 9;
       td.className = 'muted';
       body.appendChild(tr);
       return;
@@ -860,8 +893,150 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       cell(tr, o.accountLogin || '—');
       cell(tr, fmtTime(o.createdAt));
       cell(tr, fmtTime(o.expiresAt));
+
+      const actions = document.createElement('td');
+      actions.className = 'right';
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'mini';
+      edit.textContent = 'Sửa';
+      edit.addEventListener('click', () => openOrderEditor(o, tr));
+      actions.appendChild(edit);
+      tr.appendChild(actions);
+
       body.appendChild(tr);
     }
+  }
+
+  /**
+   * Inline editor for one order: set its status and/or move it onto a specific
+   * account. Exists for the three states nothing else could fix — paid with no
+   * stock, sitting on an account that turned out to be banned, and orders whose
+   * account was never released.
+   */
+  function openOrderEditor(order, afterRow) {
+    // One editor at a time, or two open rows can disagree about the same account.
+    document.querySelectorAll('tr.order-editor').forEach((r) => r.remove());
+
+    const tr = document.createElement('tr');
+    tr.className = 'order-editor';
+    const td = document.createElement('td');
+    td.colSpan = 9;
+
+    const form = document.createElement('div');
+    form.className = 'oe-form';
+
+    const statusLabel = document.createElement('label');
+    statusLabel.textContent = 'Trạng thái';
+    const status = document.createElement('select');
+    for (const value of ['active', 'expired', 'cancelled', 'awaiting_stock']) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = value;
+      if (value === order.status) opt.selected = true;
+      status.appendChild(opt);
+    }
+    statusLabel.appendChild(status);
+
+    const acctLabel = document.createElement('label');
+    acctLabel.textContent = 'Tài khoản';
+    const account = document.createElement('select');
+    const keep = document.createElement('option');
+    keep.value = '';
+    keep.textContent = order.accountLogin ? `— giữ ${order.accountLogin} —` : '— chưa gán —';
+    account.appendChild(keep);
+    // Only accounts that can actually be claimed, plus a clear marker on the ones
+    // a ban check has already condemned.
+    for (const a of ACCOUNTS.filter((x) => x.status === 'available')) {
+      const opt = document.createElement('option');
+      opt.value = String(a.id);
+      opt.textContent = a.login + (a.banState === 'banned' ? '  ⚠ BANNED' : '');
+      account.appendChild(opt);
+    }
+    acctLabel.appendChild(account);
+
+    const hoursLabel = document.createElement('label');
+    hoursLabel.textContent = 'Giờ (khi kích hoạt lại)';
+    const hours = document.createElement('input');
+    hours.type = 'number';
+    hours.min = '1';
+    hours.value = String(order.hours || 24);
+    hoursLabel.appendChild(hours);
+
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'primary';
+    save.textContent = 'Lưu';
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'mini';
+    cancel.textContent = 'Đóng';
+    cancel.addEventListener('click', () => tr.remove());
+
+    save.addEventListener('click', async () => {
+      save.disabled = true;
+      const payload = { hours: Number(hours.value) || order.hours };
+      if (status.value !== order.status) payload.status = status.value;
+      if (account.value) payload.accountId = Number(account.value);
+      if (payload.status === undefined && payload.accountId === undefined) {
+        notice('Chưa có gì thay đổi.', true);
+        save.disabled = false;
+        return;
+      }
+      try {
+        await api('orders/' + order.orderCode, { method: 'PATCH', body: JSON.stringify(payload) });
+        tr.remove();
+        await loadAll();
+      } catch (err) {
+        // A refused ban assignment is the one worth offering to override, and only
+        // after the operator has been told why.
+        if (err.data?.error === 'account_banned') {
+          if (confirmBanned(err.data.login)) {
+            try {
+              await api('orders/' + order.orderCode, {
+                method: 'PATCH',
+                body: JSON.stringify({ ...payload, force: true }),
+              });
+              tr.remove();
+              await loadAll();
+              return;
+            } catch (err2) {
+              notice('Vẫn không gán được: ' + err2.message, true);
+            }
+          }
+        } else {
+          notice(orderPatchError(err), true);
+        }
+        save.disabled = false;
+      }
+    });
+
+    form.append(statusLabel, acctLabel, hoursLabel, save, cancel);
+    td.appendChild(form);
+    tr.appendChild(td);
+    afterRow.insertAdjacentElement('afterend', tr);
+    status.focus();
+  }
+
+  function confirmBanned(login) {
+    return window.confirm(
+      `Tài khoản ${login} đã bị ban/khoá. Khách sẽ KHÔNG đăng nhập được.\n\n` +
+        'Vẫn gán tài khoản này?'
+    );
+  }
+
+  function orderPatchError(err) {
+    const map = {
+      needs_account: 'Phải gán tài khoản trước khi chuyển sang active.',
+      account_unavailable: 'Tài khoản đó đang được thuê hoặc không còn trống.',
+      wrong_game: 'Tài khoản đó thuộc game khác.',
+      forbidden: 'Bạn không quản lý tài khoản/đơn này.',
+      nothing_to_do: 'Chưa có gì thay đổi.',
+      unknown_account: 'Không tìm thấy tài khoản.',
+      unknown_order: 'Không tìm thấy đơn.',
+    };
+    return 'Sửa đơn thất bại: ' + (map[err.data?.error] || err.message);
   }
 
 

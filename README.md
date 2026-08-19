@@ -584,6 +584,36 @@ Behaviour worth knowing:
 - `GET /api/admin/expired` lists the same queue, so the panel shows what needs
   rotating even with no bot configured.
 
+## Fixing an order by hand
+
+`PATCH /api/admin/orders/<orderCode>` with `{status?, accountId?, hours?, force?}`,
+or the **Sửa** button on any row of the orders table.
+
+It exists for three situations nothing else could repair: an order paid while the
+pool was empty (`awaiting_stock`, no `account_id`), a customer sitting on an
+account that later turned out to be banned, and accounts left `rented` with no
+order behind them.
+
+Behaviour worth knowing:
+
+- **Assignment claims the account atomically**, with the same nested-SELECT-inside-
+  one-UPDATE that checkout uses, so an admin and a paying customer cannot both take
+  the last account. A busy account is refused with `account_unavailable`.
+- **The previous account is released** — but only if no *other* live order is on it.
+- **A banned account is refused** (`account_banned`) unless you pass `force: true`;
+  the panel asks before overriding. This shop has already handed two customers
+  Steam-locked logins.
+- **Activating requires an account** (`needs_account`), because telling a customer
+  their rental is ready and then showing them nothing is worse than leaving it
+  pending.
+- **The clock starts now, not at payment.** A stuck order gets its full hours from
+  the moment it is actually delivered — charging for time the customer could not use
+  is not on. `reminder_sent_at` is cleared too, so the expiry email still fires.
+- **Ending an order releases its account**, and `pending` is not settable: that
+  status belongs to payOS, and forcing it back would orphan a real payment.
+- Scoped like everything else. An order holding one of your accounts is yours to
+  fix; an unassigned one is only yours if the account you assign is.
+
 ## Renter problem reports
 
 A renter can report a problem with the account they are holding — most importantly
