@@ -147,6 +147,21 @@ const rentalGame = GAMES[DEFAULT_GAME];
         <span class="stock-value" id="rentStock">—</span>
       </div>
 
+      <!-- Above the plan cards on purpose: this is the one limitation that can make
+           renting the wrong choice, so it has to be read before "Thuê ngay" rather
+           than sitting in the small print underneath. -->
+      <div class="rent-warning" role="note">
+        <p class="warn-title">⚠ LƯU Ý</p>
+        <p>
+          Acc cho thuê <strong>không hỗ trợ đăng nhập qua trang web hoặc PM bên thứ 3</strong>
+          để sử dụng voice chat hoặc các tính năng custom khác, tùy server khác nhau.
+        </p>
+        <p class="warn-advice">
+          👉 Ae nào muốn chơi những server bắt buộc sử dụng voice thì mình khuyên
+          <strong>nên mua acc luôn</strong> để chơi cho thoải mái nhé!
+        </p>
+      </div>
+
       <div class="plans" data-plans={JSON.stringify(rentalGame.plans.map((p) => ({ id: p.id, label: p.label, amount: p.amount })))}>
         {
           rentalGame.plans.map((plan) => (
@@ -1031,6 +1046,41 @@ const rentalGame = GAMES[DEFAULT_GAME];
     cursor: not-allowed;
     transform: none;
     filter: none;
+  }
+
+  /* Caution, not decoration: amber and full-contrast text, unlike .rent-terms
+     which is deliberately faint. */
+  .rent-warning {
+    margin-bottom: 22px;
+    padding: 14px 16px;
+    text-align: left;
+    background: rgba(232, 200, 119, 0.07);
+    border: 1px solid var(--isle-gold);
+    border-left-width: 3px;
+    border-radius: 4px;
+  }
+
+  .rent-warning p {
+    margin: 0 0 8px;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--isle-cream);
+  }
+
+  .rent-warning p:last-child { margin-bottom: 0; }
+
+  .rent-warning strong { color: var(--isle-gold); font-weight: 600; }
+
+  .warn-title {
+    font-size: 12px !important;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: var(--isle-gold) !important;
+  }
+
+  .warn-advice {
+    padding-top: 8px;
+    border-top: 1px solid var(--isle-line);
   }
 
   .rent-terms {
