@@ -206,6 +206,53 @@ SESSION_SECRET=some-long-random-string
 Note `.dev.vars` **overrides** `wrangler.toml` `[vars]` for `wrangler dev`, so an
 empty entry there disables that provider locally even when production has it set.
 
+## Sign up with an email address
+
+Alongside Google and Apple, someone can create an account with an email and a
+password. Three steps, because the address has to be proven before it can own a
+password:
+
+```
+POST /api/auth/register  {email}            → mails a 6-digit code
+POST /api/auth/verify    {email, code}      → returns a short-lived claim token
+POST /api/auth/complete  {token, password}  → creates the user, sets the session
+POST /api/auth/login     {email, password}  → sets the session
+```
+
+Needs `RESEND_API_KEY` + `RESEND_FROM` (see the reminder section below) and D1.
+The endpoints answer `503 email_signup_unavailable` without a database, so the
+Astro dev server — which has no D1 binding — offers Google/Apple only; use
+`wrangler dev` to exercise this flow locally.
+
+Behaviour worth knowing:
+
+- **The claim token is why there are three steps, not two.** Step 3 must not take
+  the browser's word for which address was verified, so step 2 returns an HMAC
+  over the address under `SESSION_SECRET`. A client cannot mint one for an address
+  it never proved. Tested by re-signing a forged payload with a valid signature.
+- **Codes are stored hashed**, with a 10-minute life, a 60-second resend cooldown,
+  and 5 attempts. Once the attempts are spent even the *correct* code is refused —
+  a new one must be sent, or the ceiling would mean nothing.
+- **A failed send drops the code row**, so a Resend outage cannot leave someone
+  locked out by a cooldown for a failure that was never theirs.
+- **Passwords are PBKDF2-HMAC-SHA256** via WebCrypto: the Workers runtime has no
+  bcrypt, scrypt or argon2. The iteration count lives inside each hash, so raising
+  `PASSWORD_KDF_ITERATIONS` later does not strand existing rows. The default of
+  100k is a compromise with the Workers CPU limit rather than an OWASP-blessed
+  number — raise it on a paid plan and verify the login endpoint still fits.
+- **Sign-in reveals nothing about which addresses exist**: an unknown address is
+  hashed against a dummy so the timing matches, and both answer `bad_credentials`.
+  Registration *does* say `already_registered`, deliberately — otherwise a
+  returning customer has no way to learn they should sign in instead.
+- Addresses are matched case-insensitively but stored as typed, so `Ha@x.com`
+  cannot register a second account over `ha@x.com`.
+- Email users get the same `provider:sub` session shape as OIDC ones
+  (`email:<id>`), so rentals, extensions and the admin scoping all work unchanged.
+
+**Not built yet:** password reset. Someone who forgets theirs currently needs you
+to intervene. The pieces are all here (`email_codes` already carries a `purpose`
+column) but the flow is not wired.
+
 ## Steam account rentals (The Isle) via payOS
 
 The `/thuegame/theisle` member area sells timed rentals of shop-owned Steam accounts. A

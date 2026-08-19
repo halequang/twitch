@@ -50,6 +50,63 @@ const rentalGame = GAMES[DEFAULT_GAME];
           hidden
         ></div>
       </div>
+      <div class="or"><span>hoặc</span></div>
+
+      <div class="email-auth">
+        <div class="ea-tabs">
+          <button id="tabLogin" type="button" class="ea-tab active">Đăng nhập</button>
+          <button id="tabRegister" type="button" class="ea-tab">Đăng ký</button>
+        </div>
+
+        <form id="loginForm" class="ea-form">
+          <label class="ea-label" for="loginEmail">Email</label>
+          <input id="loginEmail" class="ea-input" type="email" autocomplete="email" required />
+          <label class="ea-label" for="loginPassword">Mật khẩu</label>
+          <input id="loginPassword" class="ea-input" type="password" autocomplete="current-password" required />
+          <button type="submit" class="btn ea-submit">Đăng nhập</button>
+        </form>
+
+        <!-- Step 1 of 3. Each step is its own form so the browser offers the right
+             autofill and the on-screen keyboard matches what is being asked for. -->
+        <form id="regEmailForm" class="ea-form" hidden>
+          <label class="ea-label" for="regEmail">Email</label>
+          <input id="regEmail" class="ea-input" type="email" autocomplete="email" required />
+          <p class="ea-hint">Chúng tôi sẽ gửi mã xác minh 6 số tới email này.</p>
+          <button type="submit" class="btn ea-submit">Gửi mã xác minh</button>
+        </form>
+
+        <form id="regCodeForm" class="ea-form" hidden>
+          <p class="ea-note">Đã gửi mã tới <strong id="regSentTo"></strong></p>
+          <label class="ea-label" for="regCode">Mã xác minh</label>
+          <input
+            id="regCode"
+            class="ea-input ea-code"
+            type="text"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            maxlength="6"
+            required
+          />
+          <button type="submit" class="btn ea-submit">Xác minh</button>
+          <div class="ea-links">
+            <button id="regResend" type="button" class="ea-link">Gửi lại mã</button>
+            <button id="regBack" type="button" class="ea-link">Đổi email</button>
+          </div>
+        </form>
+
+        <form id="regPassForm" class="ea-form" hidden>
+          <p class="ea-note ok">✓ Đã xác minh <strong id="regVerified"></strong></p>
+          <label class="ea-label" for="regPass">Tạo mật khẩu</label>
+          <input id="regPass" class="ea-input" type="password" autocomplete="new-password" required />
+          <label class="ea-label" for="regPass2">Nhập lại mật khẩu</label>
+          <input id="regPass2" class="ea-input" type="password" autocomplete="new-password" required />
+          <p class="ea-hint">Tối thiểu 8 ký tự.</p>
+          <button type="submit" class="btn ea-submit">Tạo tài khoản &amp; đăng nhập</button>
+        </form>
+
+        <p id="eaMsg" class="ea-msg" hidden></p>
+      </div>
+
       <p id="authError" class="gate-error" hidden></p>
       <p class="gate-note">
         Bằng việc đăng nhập, bạn đồng ý cho FunGaming VN đọc thông tin hồ sơ cơ bản
@@ -272,6 +329,153 @@ const rentalGame = GAMES[DEFAULT_GAME];
 
   #appleid-signin { cursor: pointer; }
   #appleid-signin > div { width: 100%; }
+
+  /* ─── Email sign-up / sign-in ──────────────── */
+
+  .or {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 22px 0 18px;
+    color: var(--text-dim);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+
+  .or::before,
+  .or::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+
+  .email-auth { text-align: left; }
+
+  .ea-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .ea-tab {
+    padding: 8px 14px;
+    font: inherit;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+  }
+
+  .ea-tab:hover { color: var(--gold-bright); }
+
+  .ea-tab.active {
+    color: var(--gold);
+    border-bottom-color: var(--gold);
+  }
+
+  .ea-form { display: block; }
+  .ea-form[hidden] { display: none; }
+
+  .ea-label {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  .ea-input {
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    font: inherit;
+    font-size: 14px;
+    color: var(--text);
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+  }
+
+  .ea-input:focus {
+    outline: none;
+    border-color: var(--gold-dim);
+  }
+
+  /* One code, spaced out so a mistyped digit is easy to spot. */
+  .ea-code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 20px;
+    letter-spacing: 0.4em;
+    text-align: center;
+  }
+
+  .ea-submit { width: 100%; }
+
+  .ea-hint {
+    margin: -6px 0 14px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-dim);
+  }
+
+  .ea-note {
+    margin: 0 0 14px;
+    padding: 9px 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text);
+    background: rgba(200, 164, 74, 0.06);
+    border-left: 2px solid var(--gold-dim);
+  }
+
+  .ea-note.ok { border-left-color: #5f8f4e; }
+  .ea-note strong { color: var(--gold); }
+
+  .ea-links {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .ea-link {
+    padding: 0;
+    font: inherit;
+    font-size: 12px;
+    color: var(--text-dim);
+    background: none;
+    border: 0;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .ea-link:hover { color: var(--gold-bright); }
+  .ea-link:disabled { opacity: 0.5; cursor: not-allowed; text-decoration: none; }
+
+  .ea-msg {
+    margin: 14px 0 0;
+    padding: 10px 12px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    border-radius: 3px;
+    background: rgba(122, 42, 42, 0.12);
+    border: 1px solid #6a3030;
+    color: #d98a8a;
+  }
+
+  .ea-msg.ok {
+    background: rgba(95, 143, 78, 0.12);
+    border-color: #3f6a33;
+    color: #9ec98c;
+  }
 
   .gate-error {
     margin-top: 18px;
@@ -1302,6 +1506,209 @@ const rentalGame = GAMES[DEFAULT_GAME];
       showError('Không kết nối được máy chủ. Vui lòng thử lại.');
     }
   }
+
+  /* ─── Email sign-up / sign-in ───────────────── */
+
+  // Server errors are machine-readable so they can be translated here rather than
+  // shown raw. Anything unmapped falls through to its own code, which is more use
+  // than a generic apology when someone reports a problem.
+  const EA_ERRORS = {
+    invalid_email: 'Email không hợp lệ.',
+    already_registered: 'Email này đã có tài khoản — hãy chọn “Đăng nhập”.',
+    mail_not_configured: 'Chưa cấu hình gửi email. Vui lòng liên hệ shop.',
+    email_signup_unavailable: 'Đăng ký bằng email chưa sẵn sàng. Vui lòng dùng Google hoặc Apple.',
+    mail_failed: 'Không gửi được email. Vui lòng thử lại sau ít phút.',
+    too_soon: 'Bạn vừa yêu cầu mã. Vui lòng đợi một chút rồi thử lại.',
+    no_code: 'Chưa có mã nào cho email này. Hãy gửi mã mới.',
+    code_expired: 'Mã đã hết hạn. Hãy gửi mã mới.',
+    code_incorrect: 'Mã không đúng.',
+    too_many_attempts: 'Sai mã quá nhiều lần. Hãy gửi mã mới.',
+    verification_expired: 'Phiên xác minh đã hết hạn. Hãy bắt đầu lại.',
+    password_too_short: 'Mật khẩu cần tối thiểu 8 ký tự.',
+    password_too_long: 'Mật khẩu quá dài.',
+    bad_credentials: 'Email hoặc mật khẩu không đúng.',
+    signup_failed: 'Không tạo được tài khoản. Vui lòng thử lại.',
+  };
+
+  let eaClaimToken = null;
+  let eaResendTimer = null;
+
+  function eaMessage(text, ok = false) {
+    const box = el('eaMsg');
+    box.textContent = text;
+    box.classList.toggle('ok', ok);
+    box.hidden = !text;
+  }
+
+  function eaError(data, status) {
+    const code = data?.error;
+    let text = EA_ERRORS[code] || ('Có lỗi xảy ra (' + (code || status) + ').');
+    if (code === 'code_incorrect' && typeof data.attemptsLeft === 'number') {
+      text += ' Còn ' + data.attemptsLeft + ' lần thử.';
+    }
+    if (code === 'too_soon' && typeof data.retryAfter === 'number') {
+      text += ' (' + data.retryAfter + ' giây)';
+    }
+    eaMessage(text, false);
+  }
+
+  async function eaPost(path, payload) {
+    const res = await fetch(path, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    let data = {};
+    try {
+      data = await res.json();
+    } catch {
+      /* an empty body is still an outcome */
+    }
+    return { ok: res.ok, status: res.status, data };
+  }
+
+  function eaShow(which) {
+    for (const id of ['loginForm', 'regEmailForm', 'regCodeForm', 'regPassForm']) {
+      el(id).hidden = id !== which;
+    }
+    eaMessage('');
+  }
+
+  function eaSetTab(register) {
+    el('tabLogin').classList.toggle('active', !register);
+    el('tabRegister').classList.toggle('active', register);
+    eaShow(register ? 'regEmailForm' : 'loginForm');
+  }
+
+  // The server enforces the cooldown; this only stops people hammering a button
+  // that is guaranteed to answer 429.
+  function eaStartResendCooldown(seconds) {
+    const btn = el('regResend');
+    clearInterval(eaResendTimer);
+    let left = seconds;
+    const tick = () => {
+      if (left <= 0) {
+        clearInterval(eaResendTimer);
+        btn.disabled = false;
+        btn.textContent = 'Gửi lại mã';
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = 'Gửi lại mã (' + left + 's)';
+      left--;
+    };
+    tick();
+    eaResendTimer = setInterval(tick, 1000);
+  }
+
+  function eaBusy(form, busy, label) {
+    const btn = form.querySelector('button[type="submit"]');
+    if (!btn) return;
+    btn.disabled = busy;
+    if (busy) {
+      btn.dataset.label = btn.textContent;
+      btn.textContent = label;
+    } else if (btn.dataset.label) {
+      btn.textContent = btn.dataset.label;
+    }
+  }
+
+  async function eaRequestCode(email, form) {
+    eaBusy(form, true, 'Đang gửi…');
+    const { ok, status, data } = await eaPost('/api/auth/register', { email });
+    eaBusy(form, false);
+    if (!ok) {
+      eaError(data, status);
+      // Already registered is not a dead end — put them on the sign-in tab.
+      if (data?.error === 'already_registered') eaSetTab(false);
+      return false;
+    }
+    el('regSentTo').textContent = email;
+    eaShow('regCodeForm');
+    eaStartResendCooldown(data.resendAfter || 60);
+    eaMessage('Đã gửi mã. Kiểm tra hộp thư (cả mục spam).', true);
+    el('regCode').focus();
+    return true;
+  }
+
+  el('tabLogin').addEventListener('click', () => eaSetTab(false));
+  el('tabRegister').addEventListener('click', () => eaSetTab(true));
+
+  el('regEmailForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = el('regEmail').value.trim();
+    if (!email) return;
+    await eaRequestCode(email, e.currentTarget);
+  });
+
+  el('regResend').addEventListener('click', async () => {
+    const email = el('regEmail').value.trim();
+    if (email) await eaRequestCode(email, el('regCodeForm'));
+  });
+
+  el('regBack').addEventListener('click', () => {
+    clearInterval(eaResendTimer);
+    eaShow('regEmailForm');
+    el('regEmail').focus();
+  });
+
+  el('regCodeForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const email = el('regEmail').value.trim();
+    const code = el('regCode').value.replace(/\D/g, '');
+    if (code.length !== 6) return eaMessage('Mã gồm 6 số.', false);
+
+    eaBusy(form, true, 'Đang kiểm tra…');
+    const { ok, status, data } = await eaPost('/api/auth/verify', { email, code });
+    eaBusy(form, false);
+    if (!ok || !data.token) return eaError(data, status);
+
+    eaClaimToken = data.token;
+    clearInterval(eaResendTimer);
+    el('regVerified').textContent = email;
+    eaShow('regPassForm');
+    el('regPass').focus();
+  });
+
+  el('regPassForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const password = el('regPass').value;
+    if (password !== el('regPass2').value) {
+      return eaMessage('Hai mật khẩu không giống nhau.', false);
+    }
+    if (password.length < 8) return eaMessage('Mật khẩu cần tối thiểu 8 ký tự.', false);
+    if (!eaClaimToken) return eaMessage(EA_ERRORS.verification_expired, false);
+
+    eaBusy(form, true, 'Đang tạo…');
+    const { ok, status, data } = await eaPost('/api/auth/complete', {
+      token: eaClaimToken,
+      password,
+    });
+    eaBusy(form, false);
+    if (!ok || !data.user) return eaError(data, status);
+
+    eaClaimToken = null;
+    el('regPass').value = '';
+    el('regPass2').value = '';
+    showSignedIn(data.user);
+  });
+
+  el('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    eaBusy(form, true, 'Đang đăng nhập…');
+    const { ok, status, data } = await eaPost('/api/auth/login', {
+      email: el('loginEmail').value.trim(),
+      password: el('loginPassword').value,
+    });
+    eaBusy(form, false);
+    if (!ok || !data.user) return eaError(data, status);
+    el('loginPassword').value = '';
+    showSignedIn(data.user);
+  });
 
   async function initGoogle(config) {
     await loadScript('https://accounts.google.com/gsi/client', () => !!window.google?.accounts?.id);

@@ -19,6 +19,28 @@
  * A provider with no client ID configured is simply not offered on the page.
  */
 
+import { sendMail, mailerConfigured } from './mailer.js';
+import {
+  CODE_TTL_SECONDS,
+  MIN_PASSWORD_LENGTH,
+  RESEND_COOLDOWN_SECONDS,
+  checkCode,
+  codeEmail,
+  consumeCode,
+  createUser,
+  findUserByEmail,
+  generateCode,
+  hashPassword,
+  normaliseEmail,
+  passwordProblem,
+  readClaim,
+  sessionUser,
+  signClaim,
+  storeCode,
+  touchLogin,
+  verifyPassword,
+} from './email-auth.js';
+
 const PROVIDERS = {
   google: {
     jwksUrl: 'https://www.googleapis.com/oauth2/v3/certs',
@@ -220,6 +242,10 @@ export const AUTH_PATHS = [
   '/api/auth/apple',
   '/api/auth/me',
   '/api/auth/logout',
+  '/api/auth/register',
+  '/api/auth/verify',
+  '/api/auth/complete',
+  '/api/auth/login',
 ];
 
 // Apple only ever sends the user's name once — on the very first authorization,
@@ -306,6 +332,122 @@ export async function handleAuthRequest({ path, method, body, cookie, secure, en
         'Exile',
       picture: claims.picture ?? null, // Apple never provides one
     };
+    return {
+      status: 200,
+      body: { user },
+      cookie: cookieHeader(await signSession(user, secret), { secure, maxAge: SESSION_TTL }),
+    };
+  }
+
+  /* ─── email + password ──────────────────────── */
+
+  // These need somewhere to keep users, unlike the OIDC flow where the cookie is
+  // the whole session. Say so plainly rather than failing on an undefined DB.
+  const emailPaths = ['/api/auth/register', '/api/auth/verify', '/api/auth/complete', '/api/auth/login'];
+  if (emailPaths.includes(path)) {
+    if (method !== 'POST') return { status: 405, body: { error: 'method_not_allowed' } };
+    if (!env?.DB) return { status: 503, body: { error: 'email_signup_unavailable' } };
+  }
+
+  if (path === '/api/auth/register') {
+    const parsed = normaliseEmail(body?.email);
+    if (!parsed) return { status: 400, body: { error: 'invalid_email' } };
+
+    // Telling someone the address is taken is the only way they learn to sign in
+    // instead. That does confirm an address is registered — accepted here,
+    // because the alternative is a dead end for every returning customer.
+    if (await findUserByEmail(env.DB, parsed.lower)) {
+      return { status: 409, body: { error: 'already_registered' } };
+    }
+    if (!mailerConfigured(env)) return { status: 503, body: { error: 'mail_not_configured' } };
+
+    const code = generateCode();
+    const stored = await storeCode(env.DB, { email: parsed.email, lower: parsed.lower, code });
+    if (!stored.ok) {
+      return { status: 429, body: { error: 'too_soon', retryAfter: stored.retryAfter } };
+    }
+
+    const message = codeEmail(code);
+    const sent = await sendMail(env, { to: parsed.email, ...message });
+    if (!sent.ok) {
+      // The row is dropped so the cooldown does not lock someone out of retrying
+      // over a failure that was never their doing.
+      await consumeCode(env.DB, parsed.lower);
+      return { status: 502, body: { error: 'mail_failed', reason: sent.reason } };
+    }
+    return {
+      status: 200,
+      body: { ok: true, expiresIn: CODE_TTL_SECONDS, resendAfter: RESEND_COOLDOWN_SECONDS },
+    };
+  }
+
+  if (path === '/api/auth/verify') {
+    const parsed = normaliseEmail(body?.email);
+    if (!parsed) return { status: 400, body: { error: 'invalid_email' } };
+
+    const result = await checkCode(env.DB, parsed.lower, body?.code);
+    if (!result.ok) {
+      return {
+        status: result.reason === 'code_incorrect' ? 400 : 410,
+        body: { error: result.reason, attemptsLeft: result.attemptsLeft },
+      };
+    }
+    // The code is left in place until the password is set: losing it here would
+    // strand anyone who closes the tab between the two steps.
+    return {
+      status: 200,
+      body: { ok: true, token: await signClaim(parsed.lower, secret) },
+    };
+  }
+
+  if (path === '/api/auth/complete') {
+    const lower = await readClaim(body?.token, secret);
+    if (!lower) return { status: 401, body: { error: 'verification_expired' } };
+
+    const problem = passwordProblem(body?.password);
+    if (problem) return { status: 400, body: { error: problem, minLength: MIN_PASSWORD_LENGTH } };
+
+    // Between verifying and choosing a password, the same address could have been
+    // registered in another tab. The unique index would throw; answer it properly.
+    if (await findUserByEmail(env.DB, lower)) {
+      return { status: 409, body: { error: 'already_registered' } };
+    }
+
+    const pending = await env.DB
+      .prepare(`SELECT email FROM email_codes WHERE email_lower = ?`)
+      .bind(lower)
+      .first();
+    const email = pending?.email || lower;
+
+    const id = await createUser(env.DB, {
+      email,
+      lower,
+      passwordHash: await hashPassword(body.password, env),
+      name: displayName(body?.name),
+    });
+    if (!id) return { status: 500, body: { error: 'signup_failed' } };
+    await consumeCode(env.DB, lower);
+
+    const user = sessionUser({ id, email, name: displayName(body?.name) });
+    return {
+      status: 200,
+      body: { user },
+      cookie: cookieHeader(await signSession(user, secret), { secure, maxAge: SESSION_TTL }),
+    };
+  }
+
+  if (path === '/api/auth/login') {
+    const parsed = normaliseEmail(body?.email);
+    const row = parsed ? await findUserByEmail(env.DB, parsed.lower) : null;
+
+    // Hash even when there is no such user, so the response time does not say
+    // whether the address is registered.
+    const stored = row?.password_hash || 'pbkdf2$sha256$100000$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    const good = await verifyPassword(String(body?.password ?? ''), stored);
+    if (!row || !good) return { status: 401, body: { error: 'bad_credentials' } };
+
+    await touchLogin(env.DB, row.id);
+    const user = sessionUser(row);
     return {
       status: 200,
       body: { user },
