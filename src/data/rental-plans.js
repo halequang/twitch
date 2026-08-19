@@ -47,6 +47,21 @@ export const GAMES = {
         featured: true,
       },
     ],
+    // Buying the account outright instead of renting it. Offered to a customer who
+    // already holds one: that exact login becomes theirs and leaves the pool for
+    // good. Kept out of `plans` so it does not become a third pricing card — it is
+    // only reachable from a rental you already have.
+    purchase: {
+      id: 'isle-buy',
+      label: 'Mua acc này',
+      icon: '👑',
+      // No duration. A purchase never expires, and hours: 0 keeps the orders
+      // table's NOT NULL column honest rather than inventing a fake period.
+      hours: 0,
+      amount: 190000,
+      purchase: true,
+      note: 'Sở hữu vĩnh viễn · bàn giao cả email',
+    },
   },
 };
 
@@ -55,8 +70,17 @@ export const DEFAULT_GAME = 'the-isle';
 export function findPlan(gameId, planId) {
   const game = GAMES[gameId];
   if (!game) return null;
-  const plan = game.plans.find((p) => p.id === planId);
+  const plan =
+    game.plans.find((p) => p.id === planId) ||
+    (game.purchase?.id === planId ? game.purchase : null);
   return plan ? { ...plan, gameId, gameName: game.name } : null;
+}
+
+/** The buy-out offer for a game, or null if it is rent-only. */
+export function purchasePlan(gameId) {
+  const game = GAMES[gameId];
+  if (!game?.purchase) return null;
+  return { ...game.purchase, gameId, gameName: game.name };
 }
 
 export function formatVnd(amount) {

@@ -151,6 +151,7 @@ async function handleRent(request, env, url, path) {
         // Present => top up the rental with this order code instead of renting
         // a new account. Ownership is verified server-side.
         extendOrderCode: body?.extendOrderCode,
+        buyOrderCode: body?.buyOrderCode,
       });
       return json(out, status);
     } catch (err) {

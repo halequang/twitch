@@ -273,6 +273,46 @@ Pieces:
 Endpoints (Worker only — they need D1): `GET /api/rent/plans`,
 `POST /api/rent/checkout`, `GET /api/rent/orders`, `POST /api/payos/webhook`.
 
+### Buying the account outright
+
+A customer holding a rental can buy that exact login for **190,000đ**, offered
+beside the extend buttons. It is the answer to the warning above the plan cards:
+rented accounts cannot sign in to a server's own website for voice chat, because
+that needs the mailbox — and a purchase hands the mailbox over, so buying is what
+actually fixes it.
+
+Defined as `GAMES['the-isle'].purchase` in `src/data/rental-plans.js`, deliberately
+outside `plans` so it does not become a third pricing card: it is only reachable
+from a rental you already hold.
+
+What a completed purchase does:
+
+- `steam_accounts.status` → **`sold`**, unconditionally. Every allocation query
+  filters on `available`, and `steam_change_password.py` refuses to revive a sold
+  row, so the login can never be handed to anyone else.
+- the rental it replaces → order status `sold`, `expires_at` cleared, so it stops
+  counting down.
+- the purchase order → `active` with **`expires_at = NULL`**. That NULL is what
+  makes it permanent: the sweep, the expiry reminder and the "expiring soon" panel
+  all test `expires_at IS NOT NULL`, so each ignores it rather than trusting a
+  year-2099 sentinel nobody would notice was wrong.
+- credentials keep being released for as long as they own it, **including the
+  mailbox** — regardless of `RENTAL_RELEASE_EMAIL`, which only governs renters.
+
+Guards worth knowing:
+
+- Buying needs a rental: `purchase_needs_rental` without one, and the parent order
+  is looked up scoped to `user_key`, so nobody can buy someone else's rental.
+- One unpaid checkout at a time per user and target, **but a purchase gets its own
+  slot**. An extension and a buy-out of the same rental both point at that order,
+  so sharing one would hand back the 50k extension link for a 190k purchase.
+  Keying on `plan_id` outright would have given every plan its own slot and lost
+  the original guard — there is a test for both halves.
+- The buy button asks for a second click before creating the order. It is
+  irreversible and roughly four times the weekly price, so it should not be one
+  stray tap away from "1 tuần · 50k".
+- Fulfilment is idempotent, like the rest: payOS delivers webhooks twice.
+
 ### How an order flows
 
 1. `POST /api/rent/checkout` checks stock, writes a `pending` order, and asks

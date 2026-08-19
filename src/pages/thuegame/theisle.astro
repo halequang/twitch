@@ -219,7 +219,19 @@ const rentalGame = GAMES[DEFAULT_GAME];
         </p>
       </div>
 
-      <div class="plans" data-plans={JSON.stringify(rentalGame.plans.map((p) => ({ id: p.id, label: p.label, amount: p.amount })))}>
+      <div
+        class="plans"
+        data-plans={JSON.stringify(rentalGame.plans.map((p) => ({ id: p.id, label: p.label, amount: p.amount })))}
+        data-purchase={rentalGame.purchase
+          ? JSON.stringify({
+              id: rentalGame.purchase.id,
+              label: rentalGame.purchase.label,
+              amount: rentalGame.purchase.amount,
+              icon: rentalGame.purchase.icon,
+              note: rentalGame.purchase.note,
+            })
+          : undefined}
+      >
         {
           rentalGame.plans.map((plan) => (
             <div class={plan.featured ? 'plan featured' : 'plan'}>
@@ -986,6 +998,48 @@ const rentalGame = GAMES[DEFAULT_GAME];
   }
 
   .rent-orders :global(.extend-btn:disabled) { opacity: 0.5; cursor: not-allowed; }
+
+  .rent-orders :global(.buy) {
+    width: 100%;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--isle-line);
+  }
+
+  .rent-orders :global(.buy-btn) {
+    width: 100%;
+    padding: 11px 16px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--isle-bg);
+    background: linear-gradient(180deg, var(--isle-cream) 0%, var(--isle-gold) 100%);
+    border: 1px solid var(--isle-gold);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .rent-orders :global(.buy-btn:hover) { filter: brightness(1.08); }
+  .rent-orders :global(.buy-btn:disabled) { opacity: 0.5; cursor: not-allowed; filter: none; }
+
+  .rent-orders :global(.buy-note) {
+    margin: 7px 0 0;
+    font-size: 11.5px;
+    line-height: 1.6;
+    text-align: center;
+    color: var(--isle-green);
+  }
+
+  .rent-orders :global(.owned-note) {
+    margin: 0;
+    padding: 11px 14px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--isle-cream);
+    background: rgba(232, 200, 119, 0.08);
+    border-left: 2px solid var(--isle-gold);
+  }
 
   .rent-orders :global(.rental-note) {
     margin-top: 12px;
@@ -1800,6 +1854,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
     extended: 'Đã gia hạn',
     awaiting_stock: 'Đã thanh toán — hết tài khoản',
     error: 'Lỗi đọc tài khoản',
+    sold: 'Đã chuyển sang mua',
   };
 
   let countdownTimer = null;
@@ -1855,10 +1910,13 @@ const rentalGame = GAMES[DEFAULT_GAME];
     head.className = 'rental-head';
     const title = document.createElement('span');
     title.className = 'rental-title';
-    title.textContent = 'The Isle · ' + order.hours + ' giờ';
+    // A purchase has no duration, so the usual "· N giờ" would read "· 0 giờ".
+    title.textContent = order.purchase ? 'The Isle · Sở hữu vĩnh viễn' : 'The Isle · ' + order.hours + ' giờ';
     const status = document.createElement('span');
     status.className = 'rental-status';
-    status.textContent = RENT_STATUS[order.status] || order.status;
+    status.textContent = order.purchase && order.status === 'active'
+      ? 'Đã mua'
+      : RENT_STATUS[order.status] || order.status;
     head.append(title, status);
 
     if (order.status === 'active' && order.expiresAt) {
@@ -1916,6 +1974,9 @@ const rentalGame = GAMES[DEFAULT_GAME];
   }
 
   const RENT_PLANS = JSON.parse(document.querySelector('.plans').dataset.plans);
+  const BUY_PLAN = document.querySelector('.plans').dataset.purchase
+    ? JSON.parse(document.querySelector('.plans').dataset.purchase)
+    : null;
 
   const compact = (amount) => (amount % 1000 === 0 ? amount / 1000 + 'k' : amount + '₫');
 
@@ -1926,6 +1987,15 @@ const rentalGame = GAMES[DEFAULT_GAME];
   function extendControls(order) {
     const wrap = document.createElement('div');
     wrap.className = 'extend';
+
+    // An account they already own has nothing to extend and nothing left to buy.
+    if (order.purchase) {
+      const owned = document.createElement('p');
+      owned.className = 'owned-note';
+      owned.textContent = '👑 Tài khoản này đã thuộc quyền sở hữu của bạn — không còn thời hạn.';
+      wrap.appendChild(owned);
+      return wrap;
+    }
 
     const label = document.createElement('span');
     label.className = 'extend-label';
@@ -1940,7 +2010,45 @@ const rentalGame = GAMES[DEFAULT_GAME];
       btn.addEventListener('click', () => startCheckout(plan.id, btn, order.orderCode));
       wrap.appendChild(btn);
     }
+
+    if (BUY_PLAN) wrap.appendChild(buyControls(order));
     return wrap;
+  }
+
+  /**
+   * The buy-out, offered on the rental the customer is holding. Separated from the
+   * extend buttons because it is not another duration — it ends the rental, and
+   * costs roughly four times the weekly plan, so it must not be a click away from
+   * "1 tuần · 50k" without a word of explanation.
+   */
+  function buyControls(order) {
+    const box = document.createElement('div');
+    box.className = 'buy';
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'buy-btn';
+    btn.textContent = (BUY_PLAN.icon ? BUY_PLAN.icon + ' ' : '') + BUY_PLAN.label + ' · ' + compact(BUY_PLAN.amount);
+
+    const note = document.createElement('p');
+    note.className = 'buy-note';
+    note.textContent = BUY_PLAN.note || '';
+
+    btn.addEventListener('click', () => {
+      // Irreversible and four times the weekly price: confirm in place rather than
+      // opening a payment window on one stray click.
+      if (btn.dataset.confirming !== '1') {
+        btn.dataset.confirming = '1';
+        btn.dataset.label = btn.textContent;
+        btn.textContent = 'Xác nhận mua ' + compact(BUY_PLAN.amount) + '?';
+        note.textContent = 'Bấm lần nữa để tạo đơn. Tài khoản sẽ thuộc về bạn vĩnh viễn, kèm email.';
+        return;
+      }
+      startCheckout(BUY_PLAN.id, btn, null, order.orderCode);
+    });
+
+    box.append(btn, note);
+    return box;
   }
 
   function startCountdowns() {
@@ -2244,14 +2352,18 @@ const rentalGame = GAMES[DEFAULT_GAME];
     loadRentals();
   });
 
-  async function startCheckout(planId, button, extendOrderCode = null) {
+  async function startCheckout(planId, button, extendOrderCode = null, buyOrderCode = null) {
     button.disabled = true;
     try {
       const res = await fetch('/api/rent/checkout', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(extendOrderCode ? { planId, extendOrderCode } : { planId }),
+        body: JSON.stringify({
+          planId,
+          ...(extendOrderCode ? { extendOrderCode } : {}),
+          ...(buyOrderCode ? { buyOrderCode } : {}),
+        }),
       });
       const data = await res.json();
       if (res.ok && data.checkoutUrl) {

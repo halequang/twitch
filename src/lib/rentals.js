@@ -14,7 +14,7 @@
  * requesting session.
  */
 
-import { DEFAULT_GAME, GAMES, findPlan } from '../data/rental-plans.js';
+import { DEFAULT_GAME, GAMES, findPlan, purchasePlan } from '../data/rental-plans.js';
 import {
   createPaymentLink,
   embeddedCheckoutAvailable,
@@ -188,6 +188,10 @@ export async function listPlans(env, game = DEFAULT_GAME) {
 // non-ASCII. Build the duration from `hours` rather than the Vietnamese label,
 // so "24 giờ" becomes "24h" instead of a truncated "24 gi".
 function shortDescription(plan, isExtension = false) {
+  // payOS caps this at 25 ASCII characters, hence the trimming rather than prose.
+  if (plan.purchase) {
+    return `Mua acc ${plan.gameName}`.replace(/[^\x20-\x7E]/g, '').slice(0, 25);
+  }
   // Only collapse to days beyond one, so the "24 giờ" plan still reads "24h".
   const duration = plan.hours >= 48 && plan.hours % 24 === 0 ? `${plan.hours / 24}d` : `${plan.hours}h`;
   const verb = isExtension ? 'Gia han' : 'Thue';
@@ -216,25 +220,39 @@ async function insertOrder(db, order) {
     .run();
 }
 
-export async function createCheckout(env, { user, gameId = DEFAULT_GAME, planId, origin, extendOrderCode }) {
+export async function createCheckout(
+  env,
+  { user, gameId = DEFAULT_GAME, planId, origin, extendOrderCode, buyOrderCode }
+) {
   const plan = findPlan(gameId, planId);
   if (!plan) return { status: 400, body: { error: 'unknown_plan' } };
 
   const db = env.DB;
   const key = userKey(user);
 
-  // An extension tops up a rental the customer already holds, so it reuses that
-  // account and must NOT be blocked by an empty pool.
+  // Buying is only ever offered for a rental the customer is already holding, so
+  // there is no way to buy a login they have never had in their hands.
+  if (plan.purchase && buyOrderCode == null) {
+    return { status: 400, body: { error: 'purchase_needs_rental' } };
+  }
+
+  // An extension tops up a rental the customer already holds and a purchase takes
+  // it over outright. Both act on an existing order's account, so both reuse it and
+  // must NOT be blocked by an empty pool.
+  const targetOrderCode = extendOrderCode ?? buyOrderCode;
   let parent = null;
-  if (extendOrderCode != null) {
+  if (targetOrderCode != null) {
     await sweepExpired(db);
     parent = await db
       .prepare(`SELECT * FROM orders WHERE order_code = ? AND user_key = ?`)
-      .bind(Number(extendOrderCode), key)
+      .bind(Number(targetOrderCode), key)
       .first();
-    // Scoped to user_key so one customer cannot extend another's rental.
+    // Scoped to user_key so one customer cannot extend or buy another's rental.
     if (!parent) return { status: 404, body: { error: 'unknown_order' } };
-    if (parent.status !== 'active') return { status: 409, body: { error: 'not_extendable', status: parent.status } };
+    if (parent.status !== 'active') {
+      return { status: 409, body: { error: 'not_extendable', status: parent.status } };
+    }
+    if (parent.account_id == null) return { status: 409, body: { error: 'no_account_yet' } };
     gameId = parent.game;
   } else {
     const available = await stockByGame(db, gameId);
@@ -243,13 +261,23 @@ export async function createCheckout(env, { user, gameId = DEFAULT_GAME, planId,
 
   // One unpaid checkout at a time keeps the orders table honest and stops a
   // user racking up parallel payment links.
+  // One unpaid checkout at a time, per user and per target order — switching
+  // between 1 ngày and 1 tuần reuses the same link rather than racking up parallel
+  // ones. A purchase gets its own slot though: an extension and a buy-out of the
+  // same rental both point at that order, so sharing one would hand back the 50k
+  // extension link for a 190k purchase. Keying on plan_id outright would have
+  // given every plan its own slot and lost the original guard.
+  const buyPlanId = purchasePlan(gameId)?.id ?? null;
+  const kindClause = plan.purchase ? 'AND plan_id = ?' : buyPlanId ? 'AND plan_id <> ?' : '';
+  const kindBind = plan.purchase ? [plan.id] : buyPlanId ? [buyPlanId] : [];
   const pending = await db
     .prepare(
       `SELECT order_code, checkout_url FROM orders
         WHERE user_key = ? AND status = 'pending' AND created_at > ?
-          AND COALESCE(extends_order, 0) = COALESCE(?, 0)`
+          AND COALESCE(extends_order, 0) = COALESCE(?, 0)
+          ${kindClause}`
     )
-    .bind(key, now() - 60 * 30, parent ? parent.order_code : null)
+    .bind(key, now() - 60 * 30, parent ? parent.order_code : null, ...kindBind)
     .first();
   if (pending?.checkout_url) {
     return {
@@ -343,10 +371,18 @@ export async function fulfilOrder(env, orderCode) {
     .bind(orderCode)
     .first();
   if (!order) return { ok: false, reason: 'unknown_order' };
-  if (order.status === 'active' || order.status === 'expired' || order.status === 'extended') {
+  if (
+    order.status === 'active' ||
+    order.status === 'expired' ||
+    order.status === 'extended' ||
+    order.status === 'sold'
+  ) {
     return { ok: true, order };
   }
 
+  // A purchase also points at a parent order, so it must be checked before the
+  // extension branch or a buy-out would top up a rental instead of ending it.
+  if (findPlan(order.game, order.plan_id)?.purchase) return fulfilPurchase(env, order);
   if (order.extends_order != null) return fulfilExtension(env, order);
 
   await sweepExpired(db);
@@ -373,6 +409,63 @@ export async function fulfilOrder(env, orderCode) {
   return { ok: true, order: { ...order, status: 'active', account_id: accountId } };
 }
 
+
+/**
+ * Applies a paid purchase: the rented login becomes the customer's for good.
+ *
+ * Three things have to be true afterwards, and each is one statement below:
+ *   - the account never goes back in the pool ('sold' is filtered out of every
+ *     allocation query, and steam_change_password.py refuses to revive it),
+ *   - the rental it replaces stops counting down,
+ *   - the buyer keeps seeing the credentials forever.
+ *
+ * That last one is why expires_at is NULL rather than some distant date: the
+ * sweep, the expiry reminder and the "expiring soon" panel all test
+ * `expires_at IS NOT NULL`, so a NULL expiry is ignored by each of them instead
+ * of relying on a year-2099 sentinel nobody would notice was wrong.
+ *
+ * Deliberately does NOT sweep first, for the same reason fulfilExtension does not:
+ * a sweep could expire the parent and hand its account back to the pool moments
+ * before we sell it.
+ */
+async function fulfilPurchase(env, order) {
+  const db = env.DB;
+  const ts = now();
+
+  const parent =
+    order.extends_order != null
+      ? await db.prepare(`SELECT * FROM orders WHERE order_code = ?`).bind(order.extends_order).first()
+      : null;
+
+  // Paid for a login we cannot identify: never guess, and never silently swallow
+  // the payment.
+  if (!parent || parent.user_key !== order.user_key || parent.account_id == null) {
+    await db
+      .prepare(`UPDATE orders SET status = 'awaiting_stock', paid_at = COALESCE(paid_at, ?) WHERE order_code = ?`)
+      .bind(ts, order.order_code)
+      .run();
+    return { ok: false, reason: 'unknown_parent' };
+  }
+
+  const accountId = parent.account_id;
+
+  await db.batch([
+    // Unconditional on purpose. Whatever state the row is in, a sold login must
+    // never be allocated to anyone else again.
+    db.prepare(`UPDATE steam_accounts SET status = 'sold' WHERE id = ?`).bind(accountId),
+    db
+      .prepare(`UPDATE orders SET status = 'sold', expires_at = NULL WHERE order_code = ?`)
+      .bind(parent.order_code),
+    db
+      .prepare(
+        `UPDATE orders SET status = 'active', paid_at = COALESCE(paid_at, ?), account_id = ?, expires_at = NULL
+          WHERE order_code = ?`
+      )
+      .bind(ts, accountId, order.order_code),
+  ]);
+
+  return { ok: true, order: { ...order, status: 'active', account_id: accountId }, purchased: true };
+}
 
 /**
  * Applies a paid extension: adds the plan's hours to the rental it points at,
@@ -505,10 +598,12 @@ export async function listOrders(env, user) {
       checkoutUrl: order.status === 'pending' ? order.checkout_url : null,
       createdAt: order.created_at,
       expiresAt: order.expires_at,
+      purchase: Boolean(findPlan(order.game, order.plan_id)?.purchase),
       credentials: null,
     };
 
-    // Credentials are released only for this user's own live rental.
+    // Credentials are released only for this user's own live rental — or, for a
+    // purchase, for as long as they own it.
     if (order.status === 'active' && order.account_id != null) {
       const account = await db
         .prepare(
@@ -523,10 +618,13 @@ export async function listOrders(env, user) {
             password: await decryptSecret(account.password_enc, env.ACCOUNT_ENC_KEY),
             note: account.note ?? null,
           };
-          // The mailbox is withheld by default: whoever holds it can reset the
-          // Steam password and keep the account for good. Opt in only if Steam
-          // Guard is blocking your renters from signing in at all.
-          if (releasesEmail(env)) {
+          // The mailbox is withheld from renters by default: whoever holds it can
+          // reset the Steam password and keep the account for good. For a BUYER
+          // that is precisely the point — and it is what makes buying fix the
+          // problem the rental page warns about, since logging in to a server's
+          // own site for voice chat needs the mailbox to confirm it. So a purchase
+          // always includes it; a rental only if you opt in.
+          if (entry.purchase || releasesEmail(env)) {
             entry.credentials.email = account.email ?? null;
             entry.credentials.emailPassword = account.email_password_enc
               ? await decryptSecret(account.email_password_enc, env.ACCOUNT_ENC_KEY)
