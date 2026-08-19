@@ -141,11 +141,25 @@ export async function sweepExpiredRentals(db) {
   return sweepExpired(db);
 }
 
-export async function stockByGame(db, game = DEFAULT_GAME) {
+/**
+ * How many accounts this customer could actually be given: the unreserved ones,
+ * plus any held aside for them.
+ *
+ * Counting every 'available' row would over-report — an account reserved for
+ * someone else is free but not free *to you*, and promising stock that checkout
+ * then refuses as out_of_stock is worse than showing the smaller honest number.
+ * With no email (an anonymous page view, or an Apple account without one) this
+ * reports the unreserved count.
+ */
+export async function stockByGame(db, game = DEFAULT_GAME, forEmail = null) {
   await sweepExpired(db);
   const row = await db
-    .prepare(`SELECT COUNT(*) AS n FROM steam_accounts WHERE game = ? AND status = 'available'`)
-    .bind(game)
+    .prepare(
+      `SELECT COUNT(*) AS n FROM steam_accounts
+        WHERE game = ? AND status = 'available'
+          AND (reserved_for IS NULL OR lower(reserved_for) = lower(?))`
+    )
+    .bind(game, forEmail ?? '')
     .first();
   return row?.n ?? 0;
 }
@@ -154,25 +168,40 @@ export async function stockByGame(db, game = DEFAULT_GAME) {
  * Claims one available account atomically. The nested SELECT inside a single
  * UPDATE ... RETURNING is what stops two simultaneous payments being handed the
  * same login.
+ *
+ * An account reserved for this customer is taken first, so a returning renter gets
+ * their old login back. Failing that, only unreserved accounts are eligible: a
+ * reservation would mean nothing if the next stranger could be handed it.
+ *
+ * Both rules live in one ORDER BY rather than two queries, because two would
+ * reopen the race the single statement exists to close.
  */
-async function claimAccount(db, game) {
+async function claimAccount(db, game, forEmail = null) {
   const row = await db
     .prepare(
       `UPDATE steam_accounts SET status = 'rented'
-        WHERE id = (SELECT id FROM steam_accounts WHERE game = ? AND status = 'available' ORDER BY id LIMIT 1)
+        WHERE id = (
+          SELECT id FROM steam_accounts
+           WHERE game = ? AND status = 'available'
+             AND (reserved_for IS NULL OR lower(reserved_for) = lower(?))
+           ORDER BY CASE WHEN reserved_for IS NULL THEN 1 ELSE 0 END, id
+           LIMIT 1
+        )
         RETURNING id`
     )
-    .bind(game)
+    .bind(game, forEmail ?? '')
     .first();
   return row?.id ?? null;
 }
 
 /* ─── catalogue ───────────────────────────────── */
 
-export async function listPlans(env, game = DEFAULT_GAME) {
+export async function listPlans(env, game = DEFAULT_GAME, forEmail = null) {
   const catalogue = GAMES[game];
   if (!catalogue) return null;
-  const available = env?.DB ? await stockByGame(env.DB, game) : 0;
+  // Counted for this viewer, so the number on the page is the number checkout
+  // will honour rather than including accounts held for someone else.
+  const available = env?.DB ? await stockByGame(env.DB, game, forEmail) : 0;
   return {
     game,
     name: catalogue.name,
@@ -255,7 +284,7 @@ export async function createCheckout(
     if (parent.account_id == null) return { status: 409, body: { error: 'no_account_yet' } };
     gameId = parent.game;
   } else {
-    const available = await stockByGame(db, gameId);
+    const available = await stockByGame(db, gameId, user?.email ?? null);
     if (available < 1) return { status: 409, body: { error: 'out_of_stock' } };
   }
 
@@ -386,7 +415,9 @@ export async function fulfilOrder(env, orderCode) {
   if (order.extends_order != null) return fulfilExtension(env, order);
 
   await sweepExpired(db);
-  const accountId = await claimAccount(db, order.game);
+  // order.user_email, not the live session: fulfilment also runs from the payOS
+  // webhook, where there is no signed-in user to ask.
+  const accountId = await claimAccount(db, order.game, order.user_email ?? null);
 
   const ts = now();
   if (accountId == null) {

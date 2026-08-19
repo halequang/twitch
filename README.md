@@ -273,6 +273,30 @@ Pieces:
 Endpoints (Worker only — they need D1): `GET /api/rent/plans`,
 `POST /api/rent/checkout`, `GET /api/rent/orders`, `POST /api/payos/webhook`.
 
+### Holding an account for one customer
+
+An account can be earmarked for a specific customer, so when they rent again they
+get that same login back instead of whatever is free. Set **Giữ cho khách (email)**
+in the account editor in `/admin`; clear the field to release it.
+
+- **Matched on the customer's email**, case-insensitively, because that is what you
+  know and what orders already record. Consequence: Apple sign-in permits a null
+  email, so a customer who signed in that way cannot be reserved for.
+- **Nobody else is ever given a held account**, even while its status is
+  `available` — a reservation that the next stranger could take would be no
+  reservation at all.
+- **Stock is therefore counted per viewer**: the unreserved accounts plus any held
+  for you. Counting every `available` row would promise stock that checkout then
+  refuses as `out_of_stock`, which is worse than the smaller honest number. Signed
+  out, the page shows the unreserved count.
+- **The hold outlives the rental.** When it lapses the account returns to
+  `available` as normal, still earmarked — that is the whole point.
+- Preference and exclusion are one `ORDER BY` inside the single
+  `UPDATE … RETURNING` that allocates an account. Splitting it into two queries
+  would reopen the race that statement exists to close.
+
+`migrations/0010_account_reserved_for.sql`.
+
 ### Buying the account outright
 
 A customer holding a rental can buy that exact login for **190,000đ**, offered

@@ -30,6 +30,7 @@ import { createCheckout, fulfilOrder, listOrders, listPlans, rentalsConfigured, 
 import { isMerchantConfigError, verifyWebhook } from "../src/lib/payos.js";
 import { ADMIN_PREFIX, handleAdminRequest } from "../src/lib/admin.js";
 import { notifyExpiredRentals } from "../src/lib/notify.js";
+import { submitReport, listOwnReports } from "../src/lib/reports.js";
 
 const ROUTES = {
   "/":          "/index.html",
@@ -126,7 +127,11 @@ async function handleRent(request, env, url, path) {
 
   if (path === "/api/rent/plans") {
     if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
-    const catalogue = await listPlans(env);
+    // The stock figure is per-viewer: an account reserved for another customer is
+    // free but not available to whoever is reading the page. Signed out, this is
+    // simply the unreserved count.
+    const viewer = await requireUser(request, env);
+    const catalogue = await listPlans(env, undefined, viewer?.email ?? null);
     return json(catalogue ?? { error: "unknown_game" }, catalogue ? 200 : 404);
   }
 
@@ -176,7 +181,29 @@ async function handleRent(request, env, url, path) {
     if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
     const user = await requireUser(request, env);
     if (!user) return json({ error: "unauthorized" }, 401);
-    return json({ orders: await listOrders(env, user) });
+    return json({ orders: await listOrders(env, user), reports: await listOwnReports(env, user) });
+  }
+
+  // A renter reporting a problem with the account they hold — most importantly
+  // "someone else is logged in", which means the password is out.
+  if (path === "/api/rent/report") {
+    if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+    const user = await requireUser(request, env);
+    if (!user) return json({ error: "unauthorized" }, 401);
+
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "invalid_json" }, 400);
+    }
+
+    const { status, body: out } = await submitReport(env, user, {
+      orderCode: body?.orderCode,
+      reason: body?.reason,
+      message: body?.message,
+    });
+    return json(out, status);
   }
 
   return json({ error: "not_found" }, 404);
