@@ -126,8 +126,15 @@ function loadAccounts(remote, only) {
 }
 
 function saveResult(id, { steamId, banState }, remote, ts) {
-  const sets = [`ban_state = ${sqlStr(banState)}`, `ban_checked_at = ${Number(ts)}`];
+  const sets = [];
+  // A null verdict means nothing answered this run. Writing it would erase a real
+  // verdict an earlier login established — the one direction that must never
+  // happen, since it puts a known-banned login back in the pool as "unknown".
+  if (banState != null) {
+    sets.push(`ban_state = ${sqlStr(banState)}`, `ban_checked_at = ${Number(ts)}`);
+  }
   if (steamId) sets.push(`steam_id = ${sqlStr(steamId)}`);
+  if (!sets.length) return;
   d1(`UPDATE steam_accounts SET ${sets.join(', ')} WHERE id = ${Number(id)}`, remote);
 }
 
@@ -234,7 +241,10 @@ function probeAccount(login, password, timeoutMs) {
       sawLogin = true;
       out.steamId = client.steamID?.getSteamID64() ?? null;
       out.ok = true;
-      settle(8000);
+      // Short grace only: Steam may never send the limitations message, and the
+      // steamID is the thing worth staying logged in for — bans come from the API
+      // afterwards. Waiting 8s per account cost a 48-account sweep six minutes.
+      settle(3000);
     });
 
     client.on('accountLimitations', (limited, communityBanned, locked, canInviteFriends) => {
@@ -320,8 +330,11 @@ console.log(
 );
 if (!apiKey) {
   console.log(
-    '[api] STEAM_API_KEY unset: VAC / locked / limited still work (they come from the\n' +
-      '      login itself), but game bans and trade standing will be missing.'
+    '[api] STEAM_API_KEY is unset, so BANS CANNOT BE DETECTED. Steam reports\n' +
+      '      limited/locked over the login, but not reliably — kj1rt7ba4xt0 is\n' +
+      '      community-banned and its login said nothing at all. Everything will be\n' +
+      '      reported "unknown" rather than guessed at.\n' +
+      '      Create a key at https://steamcommunity.com/dev/apikey and re-run.'
   );
 }
 if (liveHeld.length && !args.includeRented) {
@@ -368,16 +381,24 @@ if (!args.noLogin && encKey) {
     }
     const p = (await fetchPlayerBans([probe.steamId], apiKey)).get(String(probe.steamId)) || null;
     const flags = banFlags({ ...probe, publicBans: p });
-    // Finding a problem is conclusive. Finding none is only conclusive if Steam
-    // actually reported the limitations — otherwise `locked` and `limited` were
-    // never looked at, and "clean" would be a guess dressed up as a result.
-    const conclusive = flags.length > 0 || probe.limitations != null;
+    // Finding a problem is conclusive. Finding none is only conclusive if some
+    // source actually answered: GetPlayerBans, or the limitations Steam may or may
+    // not send. Without either, "clean" would be a guess dressed up as a result —
+    // and that guess is the dangerous direction, since it puts a banned login back
+    // in the rental pool.
+    const conclusive = flags.length > 0 || p != null || probe.limitations != null;
     results.push({
       account: a,
       steamId: probe.steamId,
       flags,
       checked: conclusive,
-      source: conclusive ? 'login' : 'login ok, but Steam never reported limitations',
+      source: p
+        ? probe.limitations
+          ? 'ban api + login'
+          : 'ban api'
+        : probe.limitations
+          ? 'login only (no ban api key)'
+          : 'steamID learned, but no ban source — set STEAM_API_KEY',
     });
   }
 } else if (!encKey) {
@@ -412,9 +433,18 @@ for (const r of results) {
     r.state = fresh;
   }
   byState[r.state].push(r);
-  if (!args.dryRun && r.checked) {
+  // A steamID is expensive — it costs a login and usually a Steam Guard email — so
+  // it is saved even when no verdict was reached. Gating the write on `checked`
+  // threw away the one thing the login was for, and made every re-run pay again.
+  // The verdict itself is only written when something actually answered.
+  if (!args.dryRun && (r.checked || r.steamId)) {
     try {
-      saveResult(r.account.id, { steamId: r.steamId, banState: r.state }, args.remote, ts);
+      saveResult(
+        r.account.id,
+        { steamId: r.steamId, banState: r.checked ? r.state : null },
+        args.remote,
+        ts
+      );
     } catch (e) {
       console.error(`  ! could not save ${r.account.login}: ${e.message}`);
     }
