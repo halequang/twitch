@@ -33,8 +33,8 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
         <h2 class="head" style="margin:0">⏳ Sắp hết hạn</h2>
         <label class="soon-window">Trong
           <select id="expiringHours">
-            <option value="6">6 giờ</option>
-            <option value="24" selected>24 giờ</option>
+            <option value="6" selected>6 giờ</option>
+            <option value="24">24 giờ</option>
             <option value="72">3 ngày</option>
             <option value="168">7 ngày</option>
           </select>
