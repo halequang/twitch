@@ -3,6 +3,9 @@ interface NavItem {
   href: string;
   num: string;
   label: string;
+  /** Draws the pill as a call to action. For items that leave the page, where a
+      numbered section anchor would imply it just scrolls. */
+  highlight?: boolean;
 }
 
 interface Props {
@@ -14,7 +17,7 @@ const { items } = Astro.props;
 
 <nav class="section-nav" aria-label="Section navigation">
   {items.map((item) => (
-    <a href={item.href}>
+    <a href={item.href} class={item.highlight ? 'highlight' : undefined}>
       <span class="nav-num">{item.num}</span>
       <span>{item.label}</span>
     </a>

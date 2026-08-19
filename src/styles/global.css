@@ -185,6 +185,19 @@ h1 {
   font-weight: 700;
 }
 
+/* A pill that navigates away rather than scrolling. Gold so it reads as an offer
+   among the dim section anchors. */
+.section-nav a.highlight {
+  border-color: var(--gold-dim);
+  background: linear-gradient(180deg, rgba(200, 164, 74, 0.14) 0%, rgba(200, 164, 74, 0.05) 100%);
+  color: var(--gold-bright);
+}
+
+.section-nav a.highlight:hover {
+  border-color: var(--gold);
+  box-shadow: 0 0 14px rgba(200, 164, 74, 0.18);
+}
+
 @media (max-width: 600px) {
   .section-nav { gap: 4px; }
   .section-nav a { padding: 6px 10px; font-size: 11px; }
