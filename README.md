@@ -665,6 +665,33 @@ Behaviour worth knowing:
 - Scoped like everything else. An order holding one of your accounts is yours to
   fix; an unassigned one is only yours if the account you assign is.
 
+## Daily report
+
+`GET /api/admin/report[?date=YYYY-MM-DD]`, shown as the **📊 Báo cáo ngày** card at
+the top of `/admin` with a date picker and a "hôm trước" step.
+
+It reports **revenue, not profit** — nothing in the schema records what an account
+cost or what a manager's cut is, so a margin cannot be derived. The card says so
+too, in Vietnamese, next to the number.
+
+Behaviour worth knowing:
+
+- **The day is the Vietnam day** (`+7 hours`). A UTC boundary would cut the evening
+  in half and file sales under the wrong date.
+- **Split by where the account came from**: each group by name, the shop's own
+  ungrouped stock, and — separately — orders that took money and delivered no
+  account at all. Those three are very different things and lumping them hides the
+  only one that needs action.
+- **Sold-but-unusable is stated beside the total.** Orders on `ban_state='banned'`
+  accounts are counted and their revenue named, because they inflate takings while
+  being the opposite of a good day. On 19/08 that was 4 orders / 80.000₫, all from
+  one group.
+- **Scoped.** A manager sees their own groups only, and never the shop-wide total or
+  the undelivered bucket — those cannot be attributed to a group.
+- An invalid `?date=` falls back to today rather than erroring, and the picker is
+  reset to whatever day the server actually reported on, so it cannot drift from the
+  numbers beside it.
+
 ## Renter problem reports
 
 A renter can report a problem with the account they are holding — most importantly

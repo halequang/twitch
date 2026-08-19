@@ -28,6 +28,39 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
     <div class="stats" id="stats"></div>
 
+    <!-- The daily number, straight after the tiles: this is what the panel gets
+         opened for each day. -->
+    <section id="reportWrap" class="card daily">
+      <div class="soon-head">
+        <h2 class="head" style="margin:0">📊 Báo cáo ngày</h2>
+        <label class="soon-window">Ngày
+          <input type="date" id="reportDate" />
+          <button type="button" id="reportPrev" class="mini">◀ Hôm trước</button>
+          <button type="button" id="reportToday" class="mini">Hôm nay</button>
+        </label>
+      </div>
+      <p id="reportTotals" class="report-totals"></p>
+      <p id="reportWarn" class="report-warn" hidden></p>
+      <div class="report-cols">
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>Nguồn tài khoản</th><th class="right">Đơn</th><th class="right">Doanh thu</th></tr></thead>
+            <tbody id="reportBuckets"></tbody>
+          </table>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>Gói</th><th class="right">Đơn</th><th class="right">Doanh thu</th></tr></thead>
+            <tbody id="reportPlans"></tbody>
+          </table>
+        </div>
+      </div>
+      <p class="note">
+        Đây là <strong>doanh thu</strong>, không phải lợi nhuận — hệ thống không lưu giá
+        nhập tài khoản hay tỉ lệ chia cho quản lý.
+      </p>
+    </section>
+
     <!-- Renter complaints. Above "sắp hết hạn" on purpose: an expiry is a
          schedule, a report is somebody stuck right now. -->
     <section id="reportsWrap" class="card reports" hidden>
@@ -359,6 +392,37 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
   .soon { border-left: 3px solid var(--ad-amber); }
 
   /* Red, not amber: an expiry is scheduled, a report is somebody stuck now. */
+  .daily { border-left: 3px solid var(--ad-accent); }
+
+  .report-totals {
+    margin: 4px 0 8px;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--ad-text);
+  }
+
+  .report-warn {
+    margin: 0 0 12px;
+    padding: 9px 12px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--ad-red);
+    background: var(--ad-red-soft);
+    border-radius: 4px;
+  }
+
+  .report-cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  @media (max-width: 720px) {
+    .report-cols { grid-template-columns: 1fr; }
+  }
+
+  .daily :global(.urgent) { color: var(--ad-red); font-weight: 600; }
+
   .reports { border-left: 3px solid var(--ad-red); }
 
   /* Inline order editor. Built in JS, hence :global() on its innards. */
@@ -1220,6 +1284,84 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
   el('reportsAll')?.addEventListener('change', loadReports);
 
+  function renderReport(r) {
+    el('reportTotals').textContent =
+      `${r.date} · ${r.totals.orders} đơn đã thanh toán · ${fmtVnd(r.totals.revenue)}` +
+      (r.scope === 'groups' ? '  (chỉ nhóm của bạn)' : '');
+
+    // Sold-but-unusable and paid-but-undelivered both inflate the revenue figure
+    // while being the opposite of a good day, so they are stated next to it.
+    const w = r.warnings || {};
+    const parts = [];
+    if (w.onBannedAccounts) {
+      parts.push(
+        `${w.onBannedAccounts} đơn trên tài khoản đã bị ban (${fmtVnd(w.onBannedRevenue)}) — khách không đăng nhập được`
+      );
+    }
+    if (w.undelivered) {
+      parts.push(`${w.undelivered} đơn đã thu tiền nhưng chưa giao tài khoản (${fmtVnd(w.undeliveredRevenue)})`);
+    }
+    const warn = el('reportWarn');
+    warn.hidden = parts.length === 0;
+    warn.textContent = parts.length ? '⚠ ' + parts.join(' · ') : '';
+
+    const fill = (tbody, rows, nameOf) => {
+      tbody.textContent = '';
+      if (!rows.length) {
+        const tr = document.createElement('tr');
+        const td = cell(tr, 'Không có đơn nào trong ngày này.');
+        td.colSpan = 3;
+        td.className = 'muted';
+        tbody.appendChild(tr);
+        return;
+      }
+      for (const row of rows) {
+        const tr = document.createElement('tr');
+        const label = cell(tr, nameOf(row));
+        if (row.onBanned) {
+          const flag = document.createElement('span');
+          flag.className = 'urgent';
+          flag.textContent = `  ⚠ ${row.onBanned} bị ban`;
+          label.appendChild(flag);
+        }
+        cell(tr, String(row.orders)).className = 'right';
+        cell(tr, fmtVnd(row.revenue)).className = 'right';
+        tbody.appendChild(tr);
+      }
+    };
+    fill(el('reportBuckets'), r.buckets || [], (b) => b.label);
+    fill(el('reportPlans'), r.plans || [], (p) => p.plan);
+  }
+
+  async function loadReport() {
+    const date = el('reportDate')?.value;
+    try {
+      const data = await api('report' + (date ? '?date=' + encodeURIComponent(date) : ''));
+      // Reflect the day the server actually reported on, so the picker cannot drift
+      // from the numbers beside it.
+      if (el('reportDate') && data.date) el('reportDate').value = data.date;
+      renderReport(data);
+    } catch (err) {
+      el('reportTotals').textContent = 'Không tải được báo cáo: ' + err.message;
+    }
+  }
+
+  el('reportDate')?.addEventListener('change', loadReport);
+  el('reportToday')?.addEventListener('click', () => {
+    el('reportDate').value = '';
+    loadReport();
+  });
+  el('reportPrev')?.addEventListener('click', () => {
+    const input = el('reportDate');
+    // Step from the shown day, in date arithmetic that ignores timezones — the
+    // server owns the day boundary.
+    const base = input.value || new Date().toISOString().slice(0, 10);
+    const d = new Date(base + 'T12:00:00Z');
+    d.setUTCDate(d.getUTCDate() - 1);
+    input.value = d.toISOString().slice(0, 10);
+    loadReport();
+  });
+
   function renderGroups(groups) {
     GROUPS = groups;
     fillGroupSelect(el('addGroup'));
@@ -1617,7 +1759,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       renderGroups(groups.groups);
       renderAccounts(accounts.accounts);
       renderOrders(orders.orders);
-      await Promise.all([loadExpiring(), loadReports()]);
+      await Promise.all([loadExpiring(), loadReports(), loadReport()]);
       if (IS_OWNER) {
         try {
           renderManagers((await api('managers')).managers);

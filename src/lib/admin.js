@@ -763,6 +763,111 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
     };
   }
 
+  // One day's trading, as the shop reads it. Everything here is REVENUE, not
+  // profit: nothing in the schema records what an account cost or what a manager's
+  // cut is, so a margin cannot be derived and is not implied.
+  if (path === '/api/admin/report' && method === 'GET') {
+    // Vietnam local day. A UTC day boundary would cut the evening in half and move
+    // sales into the wrong report.
+    const TZ = '+7 hours';
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(String(query?.date || '')) ? String(query.date) : null;
+    const dayExpr = day ? '?' : `date('now', '${TZ}')`;
+    const dayBinds = day ? [day] : [];
+
+    const where = scope(actor, 'a.group_id');
+    // A manager gets their groups only. Orders with no account cannot be attributed
+    // to a group at all, so they stay owner-only rather than leaking shop-wide.
+    const ownerWide = isOwner(actor);
+
+    const rows = await env.DB.prepare(
+      `SELECT
+         CASE
+           WHEN o.account_id IS NULL THEN NULL
+           ELSE COALESCE(g.name, '')
+         END AS group_name,
+         o.account_id IS NULL AS undelivered,
+         o.plan_id,
+         o.amount,
+         COALESCE(a.ban_state, '') = 'banned' AS on_banned
+       FROM orders o
+       LEFT JOIN steam_accounts a ON a.id = o.account_id
+       LEFT JOIN account_groups g ON g.id = a.group_id
+      WHERE o.paid_at IS NOT NULL
+        AND date(o.paid_at, 'unixepoch', '${TZ}') = ${dayExpr}
+        ${ownerWide ? '' : 'AND o.account_id IS NOT NULL'}${where.sql}`
+    )
+      .bind(...dayBinds, ...where.binds)
+      .all();
+
+    const orders = rows?.results ?? [];
+    const buckets = new Map();
+    const plans = new Map();
+    let revenue = 0;
+    let onBanned = 0;
+    let bannedRevenue = 0;
+    let undelivered = 0;
+    let undeliveredRevenue = 0;
+
+    for (const r of orders) {
+      revenue += r.amount;
+      // '' is a real account with no group — the shop's own stock. NULL means no
+      // account was ever attached, which is a different problem entirely.
+      const key = r.undelivered ? '__undelivered' : r.group_name || '__shop';
+      const b = buckets.get(key) || { orders: 0, revenue: 0, onBanned: 0 };
+      b.orders += 1;
+      b.revenue += r.amount;
+      if (r.on_banned) b.onBanned += 1;
+      buckets.set(key, b);
+
+      const pl = plans.get(r.plan_id) || { orders: 0, revenue: 0 };
+      pl.orders += 1;
+      pl.revenue += r.amount;
+      plans.set(r.plan_id, pl);
+
+      if (r.on_banned) {
+        onBanned += 1;
+        bannedRevenue += r.amount;
+      }
+      if (r.undelivered) {
+        undelivered += 1;
+        undeliveredRevenue += r.amount;
+      }
+    }
+
+    const label = (key) =>
+      key === '__shop' ? 'Kho shop (chưa phân nhóm)'
+        : key === '__undelivered' ? 'Chưa giao được tài khoản'
+        : key;
+
+    const resolved = day
+      ? day
+      : (await env.DB.prepare(`SELECT date('now', '${TZ}') AS d`).first())?.d ?? null;
+
+    return {
+      status: 200,
+      body: {
+        date: resolved,
+        scope: ownerWide ? 'all' : 'groups',
+        totals: { orders: orders.length, revenue },
+        // Sold but unusable, and paid but never delivered. Both inflate revenue
+        // while being the opposite of a good day, so they are reported beside it
+        // rather than left to be noticed.
+        warnings: {
+          onBannedAccounts: onBanned,
+          onBannedRevenue: bannedRevenue,
+          undelivered,
+          undeliveredRevenue,
+        },
+        buckets: [...buckets.entries()]
+          .map(([key, v]) => ({ key, label: label(key), ...v }))
+          .sort((x, y) => y.revenue - x.revenue),
+        plans: [...plans.entries()]
+          .map(([plan, v]) => ({ plan, ...v }))
+          .sort((x, y) => y.revenue - x.revenue),
+      },
+    };
+  }
+
   if (path === '/api/admin/orders' && method === 'GET') {
     return { status: 200, body: { orders: await listAllOrders(env, actor, query?.limit) } };
   }
