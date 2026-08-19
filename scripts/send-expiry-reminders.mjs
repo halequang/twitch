@@ -20,6 +20,8 @@
  *
  * Options:
  *   --hours <n>     how far ahead to look (default 3, max 168)
+ *   --cooldown <n>  hours one address must go between reminders (default 24).
+ *                   0 disables it, which is only sensible in testing
  *   --remote        read the deployed D1 (default: local)
  *   --send          really call Resend; without it nothing leaves the machine
  *   --yes           skip the confirmation prompt (for cron)
@@ -37,12 +39,17 @@
  *                   Resend requires a To, and it must not be a customer.
  *   RESEND_API_BASE optional override, for pointing at a stub during testing
  *
- * Idempotency, two layers deep, because a double-send is a customer-visible
- * mistake and this is meant to run on a schedule:
- *   - orders.reminder_sent_at is written only after Resend accepts the batch, so
- *     a crash mid-run re-sends at most the batch that was in flight.
- *   - each batch carries an Idempotency-Key derived from its recipients, which
- *     Resend honours for 24h, so even that retry does not produce two emails.
+ * Nobody is emailed twice, guarded at three levels — this runs on a schedule, and
+ * a duplicate is the kind of mistake a customer sees:
+ *   - per address, per run: rentals are grouped by email, so holding three
+ *     accounts still means one email.
+ *   - per address, across runs: an address reminded inside --cooldown is skipped
+ *     entirely. Without this, someone whose rentals expire hours apart gets a
+ *     fresh email each time the next one enters the window — different order,
+ *     but an identical-looking message, which reads as spam.
+ *   - per order: reminder_sent_at is written only after Resend accepts the batch,
+ *     and each batch carries an Idempotency-Key derived from its recipients that
+ *     Resend honours for 24h, so a crash mid-run cannot double-send either.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -63,7 +70,7 @@ const BATCH_PAUSE_MS = 150;
 /* ─── config ──────────────────────────────────── */
 
 function parseArgs(argv) {
-  const out = { hours: 3, remote: false, send: false, yes: false };
+  const out = { hours: 3, cooldown: 24, remote: false, send: false, yes: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--remote') out.remote = true;
@@ -72,6 +79,9 @@ function parseArgs(argv) {
     else if (arg.startsWith('--')) out[arg.slice(2)] = argv[++i];
   }
   out.hours = Math.min(Math.max(Number(out.hours) || 3, 1), 168);
+  // 0 is a deliberate "no cooldown", so it must survive the || fallback.
+  const cd = Number(out.cooldown);
+  out.cooldown = Math.min(Math.max(Number.isFinite(cd) ? cd : 24, 0), 720);
   return out;
 }
 
@@ -129,6 +139,24 @@ function dueRentals(remote, hours, now) {
       ORDER BY expires_at`,
     remote
   );
+}
+
+/**
+ * When each address was last reminded, for reminders newer than `since`.
+ * Keyed on the address rather than the order, because "do not email this person
+ * again yet" is a fact about the person — which order triggered it is irrelevant.
+ */
+function lastRemindedByEmail(remote, since) {
+  const rows = d1(
+    `SELECT lower(TRIM(user_email)) AS email, MAX(reminder_sent_at) AS last_at
+       FROM orders
+      WHERE reminder_sent_at IS NOT NULL
+        AND reminder_sent_at > ${Number(since)}
+        AND user_email IS NOT NULL AND TRIM(user_email) <> ''
+      GROUP BY lower(TRIM(user_email))`,
+    remote
+  );
+  return new Map(rows.map((r) => [r.email, Number(r.last_at)]));
 }
 
 /** One entry per address: the same person may hold two rentals at once. */
@@ -346,13 +374,38 @@ try {
   process.exit(1);
 }
 
-const recipients = groupByEmail(rows);
+const grouped = groupByEmail(rows);
 const fmt = (ts) => new Date(ts * 1000).toLocaleString('vi-VN', { hour12: false });
+
+// Hold back anyone already emailed inside the cooldown, whichever rental it was
+// about. This is the guard that stops staggered expiries reading as repeat spam.
+const cooldownSeconds = Math.round(args.cooldown * 3600);
+const lastSent = cooldownSeconds ? lastRemindedByEmail(args.remote, now - cooldownSeconds) : new Map();
+const recipients = [];
+const suppressed = [];
+for (const r of grouped) {
+  const seenAt = lastSent.get(r.email.toLowerCase());
+  if (seenAt) suppressed.push({ ...r, seenAt });
+  else recipients.push(r);
+}
 
 console.log(
   `[db] ${where}: ${rows.length} rental(s) ending within ${args.hours}h and not yet reminded ` +
-    `→ ${recipients.length} recipient(s).`
+    `→ ${grouped.length} recipient(s).`
 );
+
+if (suppressed.length) {
+  console.log(
+    `[cooldown] holding back ${suppressed.length} recipient(s) emailed in the last ` +
+      `${args.cooldown}h — one reminder per customer, not one per rental:`
+  );
+  for (const r of suppressed) {
+    console.log(
+      `  · ${r.email}  ·  last emailed ${fmt(r.seenAt)}  ·  ` +
+        `eligible again ${fmt(r.seenAt + cooldownSeconds)}`
+    );
+  }
+}
 
 if (!recipients.length) {
   console.log('Nothing to send.');
@@ -392,6 +445,19 @@ for (const g of plan) {
     `\n[${g.many ? 'nhiều tài khoản' : 'một tài khoản'}] ${g.recipients.length} recipient(s), ` +
       `${g.batches.length} batch(es) × up to ${MAX_BCC} BCC\n  Subject: ${g.subject}`
   );
+}
+
+// Belt and braces: the grouping above should make this impossible, but a
+// duplicate address here would mean a customer gets two copies of the same
+// message in one run, so it is worth proving rather than assuming.
+const everyRecipient = plan.flatMap((g) => g.batches.flat().map((r) => r.email.toLowerCase()));
+const duplicated = everyRecipient.filter((e, i) => everyRecipient.indexOf(e) !== i);
+if (duplicated.length) {
+  console.error(
+    `\nBUG: ${[...new Set(duplicated)].join(', ')} appears in more than one batch. ` +
+      'Refusing to send rather than double-emailing a customer.'
+  );
+  process.exit(1);
 }
 
 if (!args.send) {

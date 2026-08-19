@@ -563,10 +563,17 @@ Behaviour worth knowing:
   per-person expiry time — and deliberately **no credentials**, which would
   otherwise sit in an inbox long after the rental ended. The exact time and the
   extend button are behind the customer's own login.
+- **One reminder per customer, not per rental.** An address emailed within
+  `--cooldown` hours (default 24) is held back, whichever rental triggered it.
+  Without this, someone whose three rentals expire hours apart gets a fresh email
+  each time the next one enters the window — a different order each time, but an
+  identical-looking message, which reads as spam. The run prints who was held back
+  and when they become eligible again.
 - **Emailed exactly once.** `orders.reminder_sent_at` (migration `0006`) is the
   marker, separate from `notified_at` so the two messages cannot silence each
   other. Each batch also carries an `Idempotency-Key`, which Resend honours for
-  24h, so even a crash mid-run cannot produce two emails.
+  24h, so even a crash mid-run cannot produce two emails. As a last check the run
+  refuses to send at all if any address somehow appears in two batches.
 - **A failed batch stays due** and exits non-zero; only accepted batches are marked.
 - **Apple sign-in allows no email**, so those rentals are skipped rather than
   producing an empty recipient. Warn those customers on the page instead.
