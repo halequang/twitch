@@ -473,6 +473,51 @@ Behaviour worth knowing:
 - `GET /api/admin/expired` lists the same queue, so the panel shows what needs
   rotating even with no bot configured.
 
+## Expiry reminders to renters (Resend)
+
+The Telegram alert above tells *you* a rental ended. This tells the **customer**
+it is about to, a few hours ahead, so they can save progress or extend instead of
+being cut off mid-session.
+
+```bash
+node scripts/send-expiry-reminders.mjs --remote            # dry run: who would be mailed
+node scripts/send-expiry-reminders.mjs --remote --send      # actually email them
+node scripts/send-expiry-reminders.mjs --test you@you.com   # one email to yourself
+```
+
+Nothing is sent without `--send`; a dry run prints the recipients and the exact
+message. `--send --remote` asks for typed confirmation unless `--yes` is passed
+(use that for cron). `--hours` sets the window, default **3**, max 168.
+
+```bash
+wrangler secret put RESEND_API_KEY     # https://resend.com/api-keys
+```
+
+```
+# .dev.vars — the from-domain must be verified in Resend or the API answers 403
+RESEND_FROM=FunGaming VN <no-reply@fungamingvn.shop>
+RESEND_REPLY_TO=hotro@fungamingvn.shop
+```
+
+Behaviour worth knowing:
+
+- **One BCC blast per 50 recipients**, so customers never see each other's
+  addresses. Resend documents `to` as max 50 and says nothing about `bcc`, so it
+  is chunked at 50 too rather than assuming.
+- **The message is generic on purpose.** BCC means one shared body, so there is no
+  per-person expiry time — and deliberately **no credentials**, which would
+  otherwise sit in an inbox long after the rental ended. The exact time and the
+  extend button are behind the customer's own login.
+- **Emailed exactly once.** `orders.reminder_sent_at` (migration `0006`) is the
+  marker, separate from `notified_at` so the two messages cannot silence each
+  other. Each batch also carries an `Idempotency-Key`, which Resend honours for
+  24h, so even a crash mid-run cannot produce two emails.
+- **A failed batch stays due** and exits non-zero; only accepted batches are marked.
+- **Apple sign-in allows no email**, so those rentals are skipped rather than
+  producing an empty recipient. Warn those customers on the page instead.
+- Migration `0006` backfills everything that is not a live rental, so switching
+  this on cannot mail people about rentals that are already over.
+
 ## Uploading images to the CDN (R2)
 
 Images served from `cdn.fungamingvn.shop` live in the R2 bucket `poe-skins-assets`.
