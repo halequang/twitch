@@ -79,6 +79,43 @@ async function sendTelegram(env, text) {
 }
 
 /**
+ * Pushes a renter's problem report to the owner. Returns false rather than
+ * throwing on a failed send: the report is already stored, and telling the
+ * customer their report failed because a chat bot is misconfigured would be a lie.
+ */
+export async function sendReportNotice(env, report) {
+  if (!telegramConfigured(env)) return false;
+
+  const login = report.accountLogin ? escapeHtml(report.accountLogin) : `#${report.accountId ?? '?'}`;
+  const lines = [
+    report.urgent ? '🚨 <b>BÁO LỖI GẤP</b>' : '⚠️ <b>Khách báo lỗi tài khoản</b>',
+    '',
+    `Lý do: <b>${escapeHtml(report.label || report.reason)}</b>`,
+    `Tài khoản: <code>${login}</code>`,
+    `Đơn: <code>${report.orderCode}</code>`,
+    `Khách: ${escapeHtml(report.userEmail || 'không có email')}`,
+  ];
+  if (report.message) lines.push('', `Nội dung: ${escapeHtml(report.message)}`);
+  if (report.urgent) {
+    // An intruder report means the password is out. Say what to do, not just what
+    // happened — the same reasoning as the expiry notice.
+    lines.push(
+      '',
+      '<b>Đổi mật khẩu ngay:</b>',
+      `<code>python scripts/steam_change_password.py --db --remote --account ${report.accountLogin || ''}</code>`
+    );
+  }
+
+  try {
+    await sendTelegram(env, lines.join('\n'));
+    return true;
+  } catch (err) {
+    console.error('report notice failed:', err?.message || err);
+    return false;
+  }
+}
+
+/**
  * Rentals that have ended but not yet been announced.
  * Read-only — safe to call from the admin panel too.
  */

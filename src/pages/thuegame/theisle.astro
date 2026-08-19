@@ -1041,6 +1041,77 @@ const rentalGame = GAMES[DEFAULT_GAME];
     border-left: 2px solid var(--isle-gold);
   }
 
+  /* Built in JS, so no scoping attribute — reach them with :global() under a
+     static ancestor. Same reason as .rental above. */
+  .rent-orders :global(.report) {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--isle-line);
+  }
+
+  .rent-orders :global(.report-toggle) {
+    padding: 0;
+    font: inherit;
+    font-size: 12px;
+    color: var(--isle-green);
+    background: none;
+    border: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .rent-orders :global(.report-toggle:hover) { color: var(--isle-gold); }
+
+  .rent-orders :global(.report-form) {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .rent-orders :global(.report-reason),
+  .rent-orders :global(.report-note) {
+    width: 100%;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--isle-cream);
+    background: var(--isle-bg);
+    border: 1px solid var(--isle-line);
+    border-radius: 3px;
+  }
+
+  .rent-orders :global(.report-note) { resize: vertical; }
+
+  .rent-orders :global(.report-reason:focus),
+  .rent-orders :global(.report-note:focus) {
+    outline: none;
+    border-color: var(--isle-green);
+  }
+
+  .rent-orders :global(.report-send) { justify-self: start; }
+
+  .rent-orders :global(.report-status) {
+    margin: 0;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--isle-green);
+  }
+
+  .rent-orders :global(.report-status.error) { color: #d98a8a; }
+
+  /* An outstanding report is stated plainly so nobody files it twice. */
+  .rent-orders :global(.report-open) {
+    margin: 0;
+    padding: 10px 12px;
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: var(--isle-cream);
+    background: rgba(232, 200, 119, 0.07);
+    border-left: 2px solid var(--isle-gold);
+    border-radius: 3px;
+  }
+
   .rent-orders :global(.rental-note) {
     margin-top: 12px;
     font-size: 12px;
@@ -1946,6 +2017,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
         'Đăng nhập Steam, bật chế độ offline nếu được yêu cầu. Vui lòng không đổi mật khẩu.';
       box.appendChild(note);
       box.appendChild(extendControls(order));
+      box.appendChild(reportControls(order));
     } else if (order.status === 'pending' && order.checkoutUrl) {
       // Resume an unfinished order in the same embedded form, not by navigating
       // off to the hosted page.
@@ -1984,6 +2056,130 @@ const rentalGame = GAMES[DEFAULT_GAME];
    * "Add more time" buttons for a live rental. Extending keeps the SAME Steam
    * account, so it works even when the pool is empty — no stock check needed.
    */
+  // The renter's own open/closed reports, refreshed with the orders list.
+  const reports = [];
+
+  const REPORT_REASONS = {
+    intruder: 'Có người khác đăng nhập vào tài khoản',
+    cannot_login: 'Không đăng nhập được',
+    wrong_password: 'Mật khẩu không đúng',
+    guard_code: 'Bị hỏi mã Steam Guard',
+    banned: 'Tài khoản bị khoá / ban',
+    other: 'Vấn đề khác',
+  };
+
+  /**
+   * "Báo lỗi" on a live rental. Collapsed to a single link until used, because it
+   * is a rare action sitting next to the ones people actually came for — but
+   * reachable in one click, since the report that matters most (someone else is
+   * logged in) is the one a renter wants to send immediately.
+   */
+  function reportControls(order) {
+    const wrap = document.createElement('div');
+    wrap.className = 'report';
+
+    const open = (reports || []).find(
+      (r) => String(r.orderCode) === String(order.orderCode) && r.status === 'open'
+    );
+    if (open) {
+      const done = document.createElement('p');
+      done.className = 'report-open';
+      done.textContent = `⚠️ Đã gửi báo lỗi: ${open.reasonLabel}. Shop đang xử lý — bạn sẽ được liên hệ sớm.`;
+      wrap.appendChild(done);
+      return wrap;
+    }
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'report-toggle';
+    toggle.textContent = '⚠️ Báo lỗi tài khoản';
+
+    const form = document.createElement('div');
+    form.className = 'report-form';
+    form.hidden = true;
+
+    const select = document.createElement('select');
+    select.className = 'report-reason';
+    for (const [value, label] of Object.entries(REPORT_REASONS)) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      select.appendChild(opt);
+    }
+
+    const note = document.createElement('textarea');
+    note.className = 'report-note';
+    note.rows = 2;
+    note.maxLength = 600;
+    note.placeholder = 'Mô tả thêm (bắt buộc nếu chọn "Vấn đề khác")';
+
+    const send = document.createElement('button');
+    send.type = 'button';
+    send.className = 'btn report-send';
+    send.textContent = 'Gửi báo lỗi';
+
+    const status = document.createElement('p');
+    status.className = 'report-status';
+    status.hidden = true;
+
+    send.addEventListener('click', async () => {
+      send.disabled = true;
+      status.hidden = false;
+      status.classList.remove('error');
+      status.textContent = 'Đang gửi…';
+      try {
+        const res = await fetch('/api/rent/report', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({
+            orderCode: order.orderCode,
+            reason: select.value,
+            message: note.value,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          status.classList.add('error');
+          status.textContent =
+            data.error === 'message_required'
+              ? 'Vui lòng mô tả thêm vấn đề của bạn.'
+              : data.error === 'not_reportable'
+                ? 'Đơn này không còn báo lỗi được. Vui lòng liên hệ shop.'
+                : 'Không gửi được báo lỗi. Vui lòng thử lại hoặc liên hệ shop.';
+          send.disabled = false;
+          return;
+        }
+        status.textContent = data.urgent
+          ? 'Đã gửi! Đây là lỗi nghiêm trọng — shop sẽ đổi mật khẩu và liên hệ bạn ngay.'
+          : 'Đã gửi! Shop sẽ kiểm tra và liên hệ bạn sớm.';
+        note.disabled = true;
+        select.disabled = true;
+        // Reflect it immediately, so the button cannot be pressed again while the
+        // orders list has not been refetched yet.
+        reports.push({
+          orderCode: order.orderCode,
+          reason: select.value,
+          reasonLabel: REPORT_REASONS[select.value] || select.value,
+          status: 'open',
+        });
+      } catch {
+        status.classList.add('error');
+        status.textContent = 'Lỗi mạng. Vui lòng thử lại.';
+        send.disabled = false;
+      }
+    });
+
+    toggle.addEventListener('click', () => {
+      form.hidden = !form.hidden;
+      if (!form.hidden) select.focus();
+    });
+
+    form.append(select, note, send, status);
+    wrap.append(toggle, form);
+    return wrap;
+  }
+
   function extendControls(order) {
     const wrap = document.createElement('div');
     wrap.className = 'extend';
@@ -2082,7 +2278,12 @@ const rentalGame = GAMES[DEFAULT_GAME];
         return null;
       }
       if (!res.ok) throw new Error(String(res.status));
-      const { orders } = await res.json();
+      const data = await res.json();
+      const orders = data.orders;
+      // Replace in place rather than reassigning: reportControls() pushes an
+      // optimistic entry into this same array right after a successful send.
+      reports.length = 0;
+      reports.push(...(data.reports || []));
 
       list.textContent = '';
       // Finished and abandoned orders are noise once they are done; the notice

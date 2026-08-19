@@ -28,6 +28,29 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
     <div class="stats" id="stats"></div>
 
+    <!-- Renter complaints. Above "sắp hết hạn" on purpose: an expiry is a
+         schedule, a report is somebody stuck right now. -->
+    <section id="reportsWrap" class="card reports" hidden>
+      <div class="soon-head">
+        <h2 class="head" style="margin:0">🚨 Khách báo lỗi</h2>
+        <label class="soon-window">
+          <input type="checkbox" id="reportsAll" /> Xem cả đã xử lý
+        </label>
+      </div>
+      <p id="reportsTelegram" class="note" hidden></p>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Lúc</th><th>Lý do</th><th>Tài khoản</th><th>Khách</th>
+              <th>Nội dung</th><th>Mã đơn</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="reportsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="expiringWrap" class="card soon" hidden>
       <div class="soon-head">
         <h2 class="head" style="margin:0">⏳ Sắp hết hạn</h2>
@@ -334,6 +357,15 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
   .soon { border-left: 3px solid var(--ad-amber); }
 
+  /* Red, not amber: an expiry is scheduled, a report is somebody stuck now. */
+  .reports { border-left: 3px solid var(--ad-red); }
+
+  /* Rows and cells are built in JS, hence :global(). */
+  .reports :global(td) { vertical-align: top; }
+  .reports :global(.urgent) { color: var(--ad-red); font-weight: 600; }
+  .reports :global(tr.urgent-row) { background: var(--ad-red-soft); }
+  .reports :global(.mini) { margin-right: 6px; }
+
   .soon-head {
     display: flex;
     flex-wrap: wrap;
@@ -517,6 +549,13 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
   /* Green = sellable, amber = out with a customer, grey = parked,
      red = needs a human. */
   .tbl :global(.pill.available) { background: var(--ad-green-soft); color: var(--ad-green); }
+  /* Created in JS, so it needs :global() — Astro's scoping attribute is not on it. */
+  .tbl :global(.reserved-for) {
+    margin-top: 2px;
+    font-size: 11.5px;
+    color: #5b32b8;
+  }
+
   .tbl :global(.pill.active)    { background: var(--ad-green-soft); color: var(--ad-green); }
   .tbl :global(.pill.rented)    { background: var(--ad-amber-soft); color: var(--ad-amber); }
   .tbl :global(.pill.pending)   { background: var(--ad-accent-soft); color: var(--ad-accent); }
@@ -712,6 +751,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       [s.disabled, 'Tạm khoá'],
       [s.activeRentals, 'Đơn đang chạy'],
       [s.expiringSoon, 'Sắp hết hạn (24h)'],
+      [s.openReports, 'Khách báo lỗi'],
       [s.awaitingStock, 'Chờ xử lý'],
       [fmtVnd(s.revenue), 'Doanh thu'],
     ];
@@ -752,13 +792,23 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       cell(tr, a.groupName || '— chưa phân nhóm —');
       cell(tr, a.email || '—');
       cell(tr, pill(a.status, a.status));
-      cell(
-        tr,
-        a.rental
-          // userEmail is null for providers that give none; userKey always exists.
-          ? `${a.rental.userEmail || a.rental.userKey} · đến ${fmtTime(a.rental.expiresAt)}`
-          : '—'
-      );
+      const holder = document.createElement('div');
+      if (a.rental) {
+        const line = document.createElement('div');
+        // userEmail is null for providers that give none; userKey always exists.
+        line.textContent = `${a.rental.userEmail || a.rental.userKey} · đến ${fmtTime(a.rental.expiresAt)}`;
+        holder.appendChild(line);
+      }
+      if (a.reservedFor) {
+        // Shown whether or not it is rented right now: the hold outlives the rental,
+        // which is the whole point of it.
+        const held = document.createElement('div');
+        held.className = 'reserved-for';
+        held.textContent = '🔒 giữ cho ' + a.reservedFor;
+        holder.appendChild(held);
+      }
+      if (!a.rental && !a.reservedFor) holder.textContent = '—';
+      cell(tr, holder);
       cell(tr, [a.note, a.internalNote && '(' + a.internalNote + ')'].filter(Boolean).join(' ') || '—');
 
       const actions = document.createElement('td');
@@ -892,6 +942,108 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
   }
 
   el('expiringHours')?.addEventListener('change', loadExpiring);
+
+  function renderReports(reports, telegram) {
+    const wrap = el('reportsWrap');
+    const body = el('reportsBody');
+    if (!wrap || !body) return;
+    body.textContent = '';
+
+    // Hidden entirely when there is nothing to answer — an empty complaints table
+    // reads like a problem of its own.
+    if (!reports.length && !el('reportsAll')?.checked) {
+      wrap.hidden = true;
+      return;
+    }
+    wrap.hidden = false;
+
+    const tg = el('reportsTelegram');
+    if (tg) {
+      tg.hidden = telegram;
+      tg.textContent = telegram
+        ? ''
+        : 'Telegram chưa cấu hình đúng nên báo lỗi không được đẩy tới bạn — danh sách này là nguồn duy nhất.';
+    }
+
+    if (!reports.length) {
+      const tr = document.createElement('tr');
+      const td = cell(tr, 'Không có báo lỗi nào.');
+      td.colSpan = 7;
+      body.appendChild(tr);
+      return;
+    }
+
+    for (const r of reports) {
+      const tr = document.createElement('tr');
+      if (r.status === 'open' && r.urgent) tr.className = 'urgent-row';
+      cell(tr, fmtTime(r.createdAt));
+
+      const reason = cell(tr, (r.urgent ? '🚨 ' : '') + r.reasonLabel);
+      if (r.urgent) reason.className = 'urgent';
+
+      cell(tr, r.accountLogin || ('#' + (r.accountId ?? '?')));
+      cell(tr, r.userEmail || r.userKey);
+      cell(tr, r.message || '—');
+      cell(tr, String(r.orderCode));
+
+      const actions = document.createElement('td');
+      if (r.status === 'open') {
+        // An intruder report means the previous holder still knows the password,
+        // so the remedy is offered right here rather than left to be remembered.
+        if (r.urgent && r.accountLogin) {
+          const rotate = document.createElement('button');
+          rotate.type = 'button';
+          rotate.className = 'mini';
+          rotate.textContent = 'Copy lệnh đổi pass';
+          rotate.addEventListener('click', async () => {
+            const cmd = `python scripts/steam_change_password.py --db --remote --account ${r.accountLogin}`;
+            try {
+              await navigator.clipboard.writeText(cmd);
+              rotate.textContent = 'Đã copy';
+              setTimeout(() => (rotate.textContent = 'Copy lệnh đổi pass'), 1500);
+            } catch {
+              rotate.textContent = 'Lỗi copy';
+            }
+          });
+          actions.appendChild(rotate);
+        }
+        const done = document.createElement('button');
+        done.type = 'button';
+        done.className = 'mini';
+        done.textContent = 'Đã xử lý';
+        done.addEventListener('click', async () => {
+          done.disabled = true;
+          try {
+            await api('reports/resolve', {
+              method: 'POST',
+              body: JSON.stringify({ id: r.id }),
+            });
+            await Promise.all([loadReports(), loadSummary()]);
+          } catch (err) {
+            done.disabled = false;
+            notice('Không xử lý được báo lỗi: ' + err.message, true);
+          }
+        });
+        actions.appendChild(done);
+      } else {
+        actions.textContent = 'đã xử lý' + (r.resolvedBy ? ' · ' + r.resolvedBy : '');
+      }
+      tr.appendChild(actions);
+      body.appendChild(tr);
+    }
+  }
+
+  async function loadReports() {
+    try {
+      const all = el('reportsAll')?.checked ? '?all=1' : '';
+      const data = await api('reports' + all);
+      renderReports(data.reports || [], data.telegram);
+    } catch {
+      el('reportsWrap').hidden = true;
+    }
+  }
+
+  el('reportsAll')?.addEventListener('change', loadReports);
 
   function renderGroups(groups) {
     GROUPS = groups;
@@ -1039,6 +1191,12 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     { name: 'emailPassword', label: 'Mật khẩu email', placeholder: 'để trống = giữ nguyên', value: () => '' },
     { name: 'note', label: 'Ghi chú cho khách', value: (a) => a.note || '' },
     { name: 'internalNote', label: 'Ghi chú nội bộ', value: (a) => a.internalNote || '' },
+    {
+      name: 'reservedFor',
+      label: 'Giữ cho khách (email)',
+      placeholder: 'để trống = không giữ',
+      value: (a) => a.reservedFor || '',
+    },
   ];
 
   /** Opens an inline editor beneath the row. One at a time. */
@@ -1284,7 +1442,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       renderGroups(groups.groups);
       renderAccounts(accounts.accounts);
       renderOrders(orders.orders);
-      await loadExpiring();
+      await Promise.all([loadExpiring(), loadReports()]);
       if (IS_OWNER) {
         try {
           renderManagers((await api('managers')).managers);

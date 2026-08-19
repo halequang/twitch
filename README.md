@@ -584,6 +584,38 @@ Behaviour worth knowing:
 - `GET /api/admin/expired` lists the same queue, so the panel shows what needs
   rotating even with no bot configured.
 
+## Renter problem reports
+
+A renter can report a problem with the account they are holding — most importantly
+**"có người khác đăng nhập vào tài khoản"**, which means a previous renter kept the
+password. `POST /api/rent/report` with `{orderCode, reason, message}`; the control
+sits under the credentials on `/thuegame/theisle`.
+
+Reasons live in `src/lib/reports.js`. `intruder` and `wrong_password` are treated
+as **urgent**: those two mean the account is compromised, not merely inconvenient.
+
+The panel shows open reports at `/admin` above "sắp hết hạn" — a countdown is a
+schedule, a report is somebody stuck right now — with a stat tile alongside.
+`GET /api/admin/reports` (add `?all=1` for resolved ones) and
+`POST /api/admin/reports/resolve` with `{id, resolution}`.
+
+Behaviour worth knowing:
+
+- **Stored, not just announced.** A Telegram ping nobody reads is gone; the row
+  stays until someone resolves it. The push is best-effort on top, and a failed
+  send never makes the renter think their report did not go through.
+- **Ownership is checked on `user_key`**, and a report against someone else's order
+  returns the same 404 as one that does not exist, so the endpoint cannot be used
+  to probe which order codes are real.
+- **One open report per order** (a partial unique index). A renter pressing the
+  button twice updates their report instead of queueing a second ticket.
+- **Reportable for 48h after expiry**, since an intrusion is often noticed late,
+  but not forever — old orders would otherwise become a spam surface.
+- **Scoped like stock.** A manager sees and resolves reports about their own groups
+  only; `resolved_by` records the actual signed-in address.
+- An urgent report offers the rotation command for that exact account, because
+  changing the password is the actual remedy.
+
 ## Expiry reminders to renters (Resend)
 
 The Telegram alert above tells *you* a rental ended. This tells the **customer**

@@ -17,6 +17,7 @@
 import { decryptSecret, encryptSecret, sweepExpiredRentals } from './rentals.js';
 import { DEFAULT_GAME } from '../data/rental-plans.js';
 import { pendingExpiryNotices, telegramConfigured } from './notify.js';
+import { REPORT_REASONS, URGENT_REASONS } from './reports.js';
 
 export const ADMIN_PREFIX = '/api/admin/';
 
@@ -126,6 +127,7 @@ function cleanText(value, max = 200) {
 // carry credentials, encrypted or not.
 const ACCOUNT_COLUMNS = `
   a.id, a.game, a.login, a.email, a.note, a.internal_note, a.status, a.created_at,
+  a.reserved_for,
   (a.email_password_enc IS NOT NULL) AS has_email_password,
   a.group_id, g.name AS group_name,
   o.order_code AS rented_order, o.user_key AS rented_by, o.user_email AS rented_email,
@@ -154,6 +156,7 @@ async function listAccounts(env, actor) {
     internalNote: r.internal_note ?? null,
     status: r.status,
     createdAt: r.created_at,
+    reservedFor: r.reserved_for ?? null,
     hasEmailPassword: Boolean(r.has_email_password),
     rental: r.rented_order
       ? {
@@ -243,6 +246,18 @@ async function updateAccount(env, actor, id, body) {
   if (body?.email !== undefined) push('email = ?', cleanText(body.email, 200));
   if (body?.note !== undefined) push('note = ?', cleanText(body.note, 300));
   if (body?.internalNote !== undefined) push('internal_note = ?', cleanText(body.internalNote, 300));
+  if (body?.reservedFor !== undefined) {
+    // Empty clears the hold. Stored lower-cased because allocation matches on it
+    // case-insensitively, and a stored "Ha@X.com" would be a trap for anyone
+    // reading the column directly.
+    const raw = cleanText(body.reservedFor, 200);
+    const email = raw ? raw.toLowerCase() : null;
+    // Not a full address check — the customer's real address is whatever their
+    // orders carry, and a strict regex here would only reject valid odd ones. But
+    // something without an @ can never match a session email, so it is a typo.
+    if (email && !email.includes('@')) return bad('reserved_for_not_an_email');
+    push('reserved_for = ?', email);
+  }
 
   if (body?.status !== undefined) {
     const status = String(body.status);
@@ -395,6 +410,7 @@ async function summary(env, actor) {
            (SELECT COUNT(*) FROM orders WHERE status = 'active'
               AND expires_at > strftime('%s','now')
               AND expires_at <= strftime('%s','now') + 86400) AS expiringSoon,
+           (SELECT COUNT(*) FROM account_reports WHERE status = 'open') AS openReports,
            (SELECT COALESCE(SUM(amount), 0) FROM orders WHERE paid_at IS NOT NULL) AS revenue`
       ).first()) ?? {}
     );
@@ -405,7 +421,7 @@ async function summary(env, actor) {
   const ids = actor?.groupIds ?? [];
   if (!ids.length) {
     return { accounts: 0, available: 0, rented: 0, sold: 0, disabled: 0, activeRentals: 0,
-             awaitingStock: 0, expiringSoon: 0, revenue: 0 };
+             awaitingStock: 0, expiringSoon: 0, openReports: 0, revenue: 0 };
   }
   const list = ids.map(() => '?').join(', ');
   const row = await env.DB.prepare(
@@ -423,10 +439,12 @@ async function summary(env, actor) {
          WHERE a.group_id IN (${list}) AND o.status = 'active'
            AND o.expires_at > strftime('%s','now')
            AND o.expires_at <= strftime('%s','now') + 86400) AS expiringSoon,
+       (SELECT COUNT(*) FROM account_reports r JOIN steam_accounts a ON a.id = r.account_id
+         WHERE a.group_id IN (${list}) AND r.status = 'open') AS openReports,
        (SELECT COALESCE(SUM(o.amount), 0) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
          WHERE a.group_id IN (${list}) AND o.paid_at IS NOT NULL) AS revenue`
   )
-    .bind(...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids)
+    .bind(...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids)
     .first();
   return row ?? {};
 }
@@ -633,6 +651,85 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
 
   // Rentals that ended and still need their Steam password rotated, scoped the
   // same way as everything else.
+  // Renter problem reports. Scoped like stock: a manager sees reports about their
+  // own accounts only. An intruder report also carries the rotation command,
+  // because that is the actual remedy.
+  if (path === '/api/admin/reports' && method === 'GET') {
+    const openOnly = query?.all !== '1';
+    const where = scope(actor, 'a.group_id');
+    const rows = await env.DB.prepare(
+      `SELECT r.id, r.order_code, r.reason, r.message, r.status, r.created_at, r.updated_at,
+              r.resolved_at, r.resolved_by, r.resolution, r.user_email, r.user_key,
+              a.login AS account_login, a.id AS account_id, a.status AS account_status,
+              a.ban_state, o.expires_at
+         FROM account_reports r
+         LEFT JOIN steam_accounts a ON a.id = r.account_id
+         LEFT JOIN orders o ON o.order_code = r.order_code
+        WHERE 1 = 1${openOnly ? " AND r.status = 'open'" : ''}${where.sql}
+        ORDER BY r.status = 'open' DESC, r.created_at DESC
+        LIMIT 100`
+    )
+      .bind(...where.binds)
+      .all();
+
+    return {
+      status: 200,
+      body: {
+        telegram: telegramConfigured(env),
+        reports: (rows?.results ?? []).map((r) => ({
+          id: r.id,
+          orderCode: r.order_code,
+          reason: r.reason,
+          reasonLabel: REPORT_REASONS[r.reason] || r.reason,
+          urgent: URGENT_REASONS.has(r.reason),
+          message: r.message ?? null,
+          status: r.status,
+          createdAt: r.created_at,
+          updatedAt: r.updated_at,
+          resolvedAt: r.resolved_at ?? null,
+          resolvedBy: r.resolved_by ?? null,
+          resolution: r.resolution ?? null,
+          userEmail: r.user_email ?? null,
+          userKey: r.user_key,
+          accountId: r.account_id ?? null,
+          accountLogin: r.account_login ?? null,
+          accountStatus: r.account_status ?? null,
+          banState: r.ban_state ?? null,
+          expiresAt: r.expires_at ?? null,
+        })),
+      },
+    };
+  }
+
+  if (path === '/api/admin/reports/resolve' && method === 'POST') {
+    const id = Number(body?.id);
+    if (!Number.isFinite(id)) return bad('unknown_report', 404);
+
+    // Re-read with the account attached so the group check is on real data rather
+    // than on whatever the caller claimed.
+    const row = await env.DB.prepare(
+      `SELECT r.id, r.status, a.group_id
+         FROM account_reports r
+         LEFT JOIN steam_accounts a ON a.id = r.account_id
+        WHERE r.id = ?`
+    )
+      .bind(id)
+      .first();
+    if (!row) return bad('unknown_report', 404);
+    if (!mayTouchAccount(actor, { group_id: row.group_id })) return bad('forbidden', 403);
+    if (row.status !== 'open') return bad('already_resolved', 409, { status: row.status });
+
+    const ts = now();
+    await env.DB.prepare(
+      `UPDATE account_reports
+          SET status = 'resolved', resolved_at = ?, resolved_by = ?, resolution = ?, updated_at = ?
+        WHERE id = ? AND status = 'open'`
+    )
+      .bind(ts, user?.email ?? user?.sub ?? 'admin', cleanText(body?.resolution, 300), ts, id)
+      .run();
+    return { status: 200, body: { ok: true, id, resolvedAt: ts } };
+  }
+
   if (path === '/api/admin/expired' && method === 'GET') {
     await sweepExpiredRentals(env.DB);
     const where = scope(actor, 'a.group_id');
