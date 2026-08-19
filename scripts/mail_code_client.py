@@ -20,6 +20,7 @@ import json
 import os
 import re
 import ssl
+import sys
 import urllib.error
 import urllib.request
 
@@ -66,8 +67,18 @@ def _dev_vars_key():
 
 
 def _api_key():
-    # Environment wins, so a one-off override still works.
-    key = os.environ.get("MAIL_API_KEY", "") or _dev_vars_key()
+    # Environment wins, so a one-off override still works — EXCEPT a value that
+    # is obviously a Cloudflare API token (cfat_...) rather than a mail key. That
+    # mis-export is a common footgun (it shadows .dev.vars and 401s every call),
+    # so ignore it and fall back to .dev.vars instead of sending a doomed key.
+    key = os.environ.get("MAIL_API_KEY", "")
+    if key.startswith("cfat_"):
+        sys.stderr.write(
+            "warning: MAIL_API_KEY in the environment looks like a Cloudflare "
+            "token (cfat_...), not a mail key; ignoring it and using .dev.vars\n"
+        )
+        key = ""
+    key = key or _dev_vars_key()
     if not key:
         raise RuntimeError(
             "MAIL_API_KEY is not set - export it, or put it in .dev.vars, "
@@ -144,8 +155,37 @@ def _post(payload, timeout):
 
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 2:
-        sys.exit("usage: MAIL_API_KEY=... python mail_code_client.py <email> [refresh_token] [client_id]")
-    args = sys.argv[1:]
-    print(read_code(args[0], args[1] if len(args) > 1 else None, args[2] if len(args) > 2 else None))
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="Call the fungamingtool mail-code API (/api/read-code).")
+    ap.add_argument("email", help="mailbox to read")
+    ap.add_argument("refresh_token", nargs="?",
+                    help="inline refresh_token; omit to use the server-side DB "
+                         "lookup (admin address only)")
+    ap.add_argument("client_id", nargs="?", help="inline client_id (Azure app id)")
+    ap.add_argument("--mode", choices=["code", "full"], default="code",
+                    help="code = just the verification code (default); "
+                         "full = the parsed emails")
+    ap.add_argument("--num", type=int, default=5,
+                    help="emails to scan in --mode full (default 5)")
+    args = ap.parse_args()
+
+    try:
+        if args.mode == "full":
+            emails = read_full(args.email, args.refresh_token, args.client_id,
+                               num_emails=args.num)
+            for m in emails:
+                print(f"From:    {m.get('from', '')}")
+                print(f"Subject: {m.get('subject', '')}")
+                print(f"Code:    {m.get('code', '')}")
+                print("-" * 48)
+            if not emails:
+                print("(no emails)")
+        else:
+            code = read_code(args.email, args.refresh_token, args.client_id)
+            print(code)
+            if not code:
+                raise SystemExit(2)   # no code found — non-zero for scripting
+    except RuntimeError as e:
+        raise SystemExit(f"error: {e}")
