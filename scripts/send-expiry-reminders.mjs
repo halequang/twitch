@@ -24,6 +24,7 @@
  *   --send          really call Resend; without it nothing leaves the machine
  *   --yes           skip the confirmation prompt (for cron)
  *   --test <email>  send the message to this address only, and mark nothing
+ *   --many true     with --test, preview the multi-rental wording instead
  *   --from <addr>   override RESEND_FROM
  *   --subject <s>   override the subject line
  *
@@ -158,16 +159,28 @@ function markReminded(orderCodes, remote, ts) {
 const esc = (s) =>
   String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-function subjectFor(hours, override) {
+function subjectFor(hours, override, many = false) {
   if (override) return override;
-  return `Tài khoản thuê của bạn sắp hết hạn (dưới ${hours} giờ)`;
+  return many
+    ? `Có tài khoản thuê của bạn sắp hết hạn (dưới ${hours} giờ)`
+    : `Tài khoản thuê của bạn sắp hết hạn (dưới ${hours} giờ)`;
 }
 
-function textBody(hours) {
+/**
+ * `many` is for renters holding more than one rental that ends in this window.
+ * BCC forbids saying *which* account, so the wording must not imply there is only
+ * one — otherwise someone renting three reads it and cannot tell what is ending.
+ */
+function textBody(hours, many = false) {
   return [
     'Xin chào,',
     '',
-    `Tài khoản Steam bạn đang thuê tại FunGaming VN sẽ hết hạn trong khoảng ${hours} giờ tới.`,
+    many
+      ? `Bạn đang thuê nhiều tài khoản Steam tại FunGaming VN, và có tài khoản sẽ hết hạn trong khoảng ${hours} giờ tới.`
+      : `Tài khoản Steam bạn đang thuê tại FunGaming VN sẽ hết hạn trong khoảng ${hours} giờ tới.`,
+    ...(many
+      ? ['', 'Hãy đăng nhập để xem chính xác tài khoản nào sắp hết hạn — thời gian còn lại hiện riêng cho từng tài khoản.']
+      : []),
     '',
     'Khi hết hạn, tài khoản được thu hồi và mật khẩu sẽ được đổi ngay, nên bạn hãy:',
     '  · Lưu tiến trình và thoát game trước khi hết giờ.',
@@ -183,7 +196,7 @@ function textBody(hours) {
   ].join('\n');
 }
 
-function htmlBody(hours) {
+function htmlBody(hours, many = false) {
   return `<!doctype html>
 <html lang="vi">
 <body style="margin:0;padding:24px;background:#0c1a10;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
@@ -192,8 +205,17 @@ function htmlBody(hours) {
       <p style="margin:0 0 6px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#7fae63;">FunGaming VN</p>
       <h1 style="margin:0 0 16px;font-size:20px;color:#f3e3b3;">Tài khoản thuê sắp hết hạn</h1>
       <p style="margin:0 0 14px;font-size:14px;line-height:1.7;color:#f3e3b3;">
-        Tài khoản Steam bạn đang thuê sẽ hết hạn trong khoảng <strong style="color:#e8c877;">${esc(hours)} giờ</strong> tới.
+        ${
+          many
+            ? `Bạn đang thuê nhiều tài khoản Steam, và có tài khoản sẽ hết hạn trong khoảng <strong style="color:#e8c877;">${esc(hours)} giờ</strong> tới.`
+            : `Tài khoản Steam bạn đang thuê sẽ hết hạn trong khoảng <strong style="color:#e8c877;">${esc(hours)} giờ</strong> tới.`
+        }
       </p>
+      ${
+        many
+          ? '<p style="margin:0 0 14px;font-size:14px;line-height:1.7;color:#f3e3b3;">Hãy đăng nhập để xem chính xác tài khoản nào sắp hết hạn — thời gian còn lại hiện riêng cho từng tài khoản.</p>'
+          : ''
+      }
       <p style="margin:0 0 8px;font-size:14px;line-height:1.7;color:#f3e3b3;">
         Khi hết hạn, tài khoản được thu hồi và mật khẩu sẽ được đổi ngay. Bạn hãy:
       </p>
@@ -223,21 +245,21 @@ function htmlBody(hours) {
  * Resend while a genuinely different batch still goes out. Time is not part of it
  * on purpose: a retry minutes later must still be recognised as the same send.
  */
-function idempotencyKey(hours, emails) {
+function idempotencyKey(hours, emails, many = false) {
   const digest = createHash('sha256')
-    .update(`expiry-reminder|${hours}|${[...emails].sort().join(',')}`)
+    .update(`expiry-reminder|${hours}|${many ? 'many' : 'one'}|${[...emails].sort().join(',')}`)
     .digest('hex');
   return `expiry-${hours}h-${digest.slice(0, 32)}`;
 }
 
-async function sendBatch({ base, apiKey, from, to, replyTo, bcc, subject, hours }) {
+async function sendBatch({ base, apiKey, from, to, replyTo, bcc, subject, hours, many = false }) {
   const payload = {
     from,
     to: [to],
     bcc,
     subject,
-    text: textBody(hours),
-    html: htmlBody(hours),
+    text: textBody(hours, many),
+    html: htmlBody(hours, many),
   };
   if (replyTo) payload.reply_to = replyTo;
 
@@ -246,7 +268,7 @@ async function sendBatch({ base, apiKey, from, to, replyTo, bcc, subject, hours 
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
-      'Idempotency-Key': idempotencyKey(hours, bcc.length ? bcc : [to]),
+      'Idempotency-Key': idempotencyKey(hours, bcc.length ? bcc : [to], many),
     },
     body: JSON.stringify(payload),
   });
@@ -289,7 +311,9 @@ function ask(question) {
 const args = parseArgs(process.argv.slice(2));
 const where = args.remote ? 'REMOTE (production)' : 'local';
 const now = Math.floor(Date.now() / 1000);
-const subject = subjectFor(args.hours, args.subject);
+// Per-group subjects are computed with the send plan; these are for --test.
+const testMany = args.many === 'true' || args.many === '1';
+const testSubject = subjectFor(args.hours, args.subject, testMany);
 
 const apiKey = conf('RESEND_API_KEY');
 const from = args.from || conf('RESEND_FROM');
@@ -306,7 +330,8 @@ if (args.test) {
   }
   console.log(`[test] one email to ${args.test} via ${base}; the database is not touched.`);
   const id = await sendBatch({
-    base, apiKey, from, to: args.test, replyTo, bcc: [], subject, hours: args.hours,
+    base, apiKey, from, to: args.test, replyTo, bcc: [], subject: testSubject, hours: args.hours,
+    many: testMany,
   });
   console.log(`✓ sent${id ? ` (id ${id})` : ''}.`);
   process.exit(0);
@@ -335,19 +360,45 @@ if (!recipients.length) {
 }
 
 for (const r of recipients) {
-  console.log(`  · ${r.email}  ·  hết hạn ${fmt(r.soonest)}  ·  đơn ${r.orderCodes.join(', ')}`);
+  const n = r.orderCodes.length;
+  console.log(
+    `  · ${r.email}  ·  hết hạn ${fmt(r.soonest)}  ·  ` +
+      `${n} đơn: ${r.orderCodes.join(', ')}`
+  );
 }
 
-const batches = chunk(recipients, MAX_BCC);
+// One address gets one email however many rentals it holds — but the two cases
+// cannot share a body, because BCC leaves no room to say *which* account is
+// ending. So the run is split by rental count and each half gets wording that is
+// true for it. Every group is chunked separately, so a group never exceeds the
+// BCC cap by riding along with another.
+const groups = [
+  { many: false, recipients: recipients.filter((r) => r.orderCodes.length === 1) },
+  { many: true, recipients: recipients.filter((r) => r.orderCodes.length > 1) },
+].filter((g) => g.recipients.length);
+
+const plan = groups.map((g) => ({
+  ...g,
+  subject: subjectFor(args.hours, args.subject, g.many),
+  batches: chunk(g.recipients, MAX_BCC),
+}));
+
 console.log(
-  `\nSubject: ${subject}\nFrom:    ${from || '(RESEND_FROM unset)'}\n` +
-    `To:      ${visibleTo || '(unset)'}   (visible; recipients go in BCC)\n` +
-    `Batches: ${batches.length} × up to ${MAX_BCC} BCC`
+  `\nFrom:    ${from || '(RESEND_FROM unset)'}\n` +
+    `To:      ${visibleTo || '(unset)'}   (visible; recipients go in BCC)`
 );
+for (const g of plan) {
+  console.log(
+    `\n[${g.many ? 'nhiều tài khoản' : 'một tài khoản'}] ${g.recipients.length} recipient(s), ` +
+      `${g.batches.length} batch(es) × up to ${MAX_BCC} BCC\n  Subject: ${g.subject}`
+  );
+}
 
 if (!args.send) {
-  console.log('\n─── message (text part) ───');
-  console.log(textBody(args.hours));
+  for (const g of plan) {
+    console.log(`\n─── message for [${g.many ? 'nhiều tài khoản' : 'một tài khoản'}] (text part) ───`);
+    console.log(textBody(args.hours, g.many));
+  }
   console.log('\nDry run — nothing sent. Add --send to email these people.');
   process.exit(0);
 }
@@ -369,20 +420,28 @@ if (args.remote && !args.yes) {
 
 let sent = 0;
 let failed = 0;
-for (const [i, batch] of batches.entries()) {
-  const bcc = batch.map((r) => r.email);
-  try {
-    const id = await sendBatch({ base, apiKey, from, to: visibleTo, replyTo, bcc, subject, hours: args.hours });
-    // Marked only now: an unsent batch must stay due, and a batch sent but not
-    // marked is at worst re-sent once, where the Idempotency-Key absorbs it.
-    markReminded(batch.flatMap((r) => r.orderCodes), args.remote, Math.floor(Date.now() / 1000));
-    sent += bcc.length;
-    console.log(`  ✓ batch ${i + 1}/${batches.length}: ${bcc.length} recipient(s)${id ? ` (id ${id})` : ''}`);
-  } catch (e) {
-    failed += bcc.length;
-    console.error(`  ⚠️  batch ${i + 1}/${batches.length} failed, left due for the next run: ${e.message}`);
+let pause = false;
+for (const g of plan) {
+  const label = g.many ? 'nhiều' : 'một';
+  for (const [i, batch] of g.batches.entries()) {
+    if (pause) await sleep(BATCH_PAUSE_MS);
+    pause = true;
+    const bcc = batch.map((r) => r.email);
+    try {
+      const id = await sendBatch({
+        base, apiKey, from, to: visibleTo, replyTo, bcc,
+        subject: g.subject, hours: args.hours, many: g.many,
+      });
+      // Marked only now: an unsent batch must stay due, and a batch sent but not
+      // marked is at worst re-sent once, where the Idempotency-Key absorbs it.
+      markReminded(batch.flatMap((r) => r.orderCodes), args.remote, Math.floor(Date.now() / 1000));
+      sent += bcc.length;
+      console.log(`  ✓ [${label}] batch ${i + 1}/${g.batches.length}: ${bcc.length} recipient(s)${id ? ` (id ${id})` : ''}`);
+    } catch (e) {
+      failed += bcc.length;
+      console.error(`  ⚠️  [${label}] batch ${i + 1}/${g.batches.length} failed, left due for the next run: ${e.message}`);
+    }
   }
-  if (i < batches.length - 1) await sleep(BATCH_PAUSE_MS);
 }
 
 console.log(`\nDone: ${sent} emailed, ${failed} still due.`);

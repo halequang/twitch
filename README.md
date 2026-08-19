@@ -504,6 +504,14 @@ Behaviour worth knowing:
 - **One BCC blast per 50 recipients**, so customers never see each other's
   addresses. Resend documents `to` as max 50 and says nothing about `bcc`, so it
   is chunked at 50 too rather than assuming.
+- **One email per person, not per rental.** Someone renting three accounts is a
+  single recipient, and all three orders are marked together.
+- **Split into two blasts by rental count.** BCC leaves no room to say *which*
+  account is ending, so renters holding several get wording that admits it
+  ("có tài khoản sẽ hết hạn" plus "đăng nhập để xem tài khoản nào") instead of a
+  message implying they have only one. Each group is chunked separately, so a
+  group never exceeds the BCC cap by riding along with the other. Preview it with
+  `--test you@you.com --many true`.
 - **The message is generic on purpose.** BCC means one shared body, so there is no
   per-person expiry time — and deliberately **no credentials**, which would
   otherwise sit in an inbox long after the rental ended. The exact time and the
