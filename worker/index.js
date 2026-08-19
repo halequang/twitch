@@ -58,6 +58,42 @@ const MOVED = {
   "/game": "/thuegame/theisle",
 };
 
+/**
+ * Headers added to every response.
+ *
+ * The member page collects a password and names Steam, Google and Apple, which is
+ * also the shape of a phishing page — heuristic scanners cannot tell the difference
+ * from the markup alone. These headers are the machine-readable difference:
+ * form-action pins credential submission to this origin, so the page provably
+ * cannot post a password anywhere else, and base-uri stops an injected <base> from
+ * moving it. That is precisely the behaviour a phishing kit needs and this site
+ * does not.
+ *
+ * Deliberately no script-src / style-src / frame-src yet: Google Identity, Apple's
+ * JS SDK, payOS's embedded checkout and Google Fonts all load cross-origin, and a
+ * wrong value there breaks sign-in or payment. The origins involved are
+ * accounts.google.com, appleid.cdn-apple.com, api-merchant.payos.vn,
+ * fonts.googleapis.com and fonts.gstatic.com — tighten in one deliberate step,
+ * verified in a browser, not as a side effect of this.
+ */
+const SECURITY_HEADERS = {
+  "content-security-policy": "form-action 'self'; frame-ancestors 'self'; base-uri 'self'",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  // No includeSubdomains: subdomains are not audited here, and locking them in is
+  // hard to walk back.
+  "strict-transport-security": "max-age=15552000",
+};
+
+/** Copies a response so headers can be added — asset responses are immutable. */
+function withSecurityHeaders(response) {
+  const out = new Response(response.body, response);
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    if (!out.headers.has(name)) out.headers.set(name, value);
+  }
+  return out;
+}
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -322,9 +358,9 @@ export default {
     const target = ROUTES[path];
     if (target) {
       const assetUrl = new URL(target, url);
-      return env.ASSETS.fetch(new Request(assetUrl, request));
+      return withSecurityHeaders(await env.ASSETS.fetch(new Request(assetUrl, request)));
     }
-    return env.ASSETS.fetch(request);
+    return withSecurityHeaders(await env.ASSETS.fetch(request));
   },
 };
 

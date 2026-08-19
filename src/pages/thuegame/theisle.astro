@@ -58,10 +58,18 @@ const rentalGame = GAMES[DEFAULT_GAME];
           <button id="tabRegister" type="button" class="ea-tab">Đăng ký</button>
         </div>
 
+        <!-- Says whose password this is, in both directions. A customer on a page
+             about Steam accounts can otherwise reasonably type their STEAM password
+             here, and a scanner reading "Mật khẩu" next to the word Steam cannot
+             tell this from credential harvesting either. -->
         <form id="loginForm" class="ea-form">
+          <p class="ea-scope">
+            Mật khẩu <strong>tài khoản FunGaming VN</strong> của bạn.
+            Không phải mật khẩu Steam — shop không bao giờ hỏi mật khẩu Steam của bạn.
+          </p>
           <label class="ea-label" for="loginEmail">Email</label>
           <input id="loginEmail" class="ea-input" type="email" autocomplete="email" required />
-          <label class="ea-label" for="loginPassword">Mật khẩu</label>
+          <label class="ea-label" for="loginPassword">Mật khẩu FunGaming VN</label>
           <input id="loginPassword" class="ea-input" type="password" autocomplete="current-password" required />
           <button type="submit" class="btn ea-submit">Đăng nhập</button>
         </form>
@@ -96,6 +104,10 @@ const rentalGame = GAMES[DEFAULT_GAME];
 
         <form id="regPassForm" class="ea-form" hidden>
           <p class="ea-note ok">✓ Đã xác minh <strong id="regVerified"></strong></p>
+          <p class="ea-scope">
+            Đặt mật khẩu cho <strong>tài khoản FunGaming VN</strong>. Đừng dùng lại
+            mật khẩu Steam của bạn.
+          </p>
           <label class="ea-label" for="regPass">Tạo mật khẩu</label>
           <input id="regPass" class="ea-input" type="password" autocomplete="new-password" required />
           <label class="ea-label" for="regPass2">Nhập lại mật khẩu</label>
@@ -1043,6 +1055,19 @@ const rentalGame = GAMES[DEFAULT_GAME];
 
   /* Built in JS, so no scoping attribute — reach them with :global() under a
      static ancestor. Same reason as .rental above. */
+  .ea-scope {
+    margin: 0 0 4px;
+    padding: 9px 11px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--isle-cream);
+    background: rgba(232, 200, 119, 0.07);
+    border-left: 2px solid var(--isle-gold);
+    border-radius: 3px;
+  }
+
+  .ea-scope strong { color: var(--isle-gold); font-weight: 600; }
+
   .rent-orders :global(.report) {
     margin-top: 12px;
     padding-top: 10px;

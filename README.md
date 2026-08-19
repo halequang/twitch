@@ -584,6 +584,40 @@ Behaviour worth knowing:
 - `GET /api/admin/expired` lists the same queue, so the panel shows what needs
   rotating even with no bot configured.
 
+## Why the member page looks like phishing (and what was done)
+
+`/thuegame/theisle` collects a password and names Steam, Google and Apple on a
+`.shop` domain. That is also the exact shape of a credential-harvesting page, and a
+heuristic scanner cannot tell the difference from the markup alone.
+
+Two things were changed to make the difference machine-readable and reader-obvious:
+
+- **`public/_headers`** publishes `form-action 'self'`, `frame-ancestors 'self'` and
+  `base-uri 'self'`, plus `nosniff`, a referrer policy and HSTS. `form-action` is the
+  important one: it proves the page cannot post a password to another origin, which
+  is precisely what a phishing kit must do.
+- **The password fields now say whose password they want** — "mật khẩu tài khoản
+  FunGaming VN", with "không phải mật khẩu Steam". A customer on a page about Steam
+  accounts could otherwise reasonably type their *Steam* password into it, which is a
+  real risk to them regardless of what any scanner thinks.
+
+Two traps found while doing it:
+
+- Headers set in `worker/index.js` never reach the pages. Cloudflare's asset server
+  answers HTML before the Worker runs, so only Worker-generated responses (404s)
+  carried them. Hence `_headers`.
+- Setting `run_worker_first` to fix that **307-loops**: the Worker's own
+  `env.ASSETS.fetch` re-enters the same route. Do not reach for it here.
+
+The CSP deliberately omits `script-src`, `style-src` and `frame-src`. Google
+Identity, `appleid.cdn-apple.com`, `api-merchant.payos.vn` and Google Fonts all load
+cross-origin, and a wrong value breaks sign-in or checkout — tighten in one
+deliberate, browser-verified step.
+
+Code changes cannot clear an existing blocklist entry. Check status and appeal at
+Google Safe Browsing (`transparencyreport.google.com/safe-browsing/search`),
+Microsoft SmartScreen, and the specific vendor that flagged it.
+
 ## Which account a customer gets
 
 `claimAccount` in `src/lib/rentals.js` picks in this order, most specific first:

@@ -1,0 +1,23 @@
+# Response headers for the static pages.
+#
+# These live here rather than in the Worker because Cloudflare's asset server
+# answers HTML before the Worker runs — headers set in worker/index.js never reach
+# the pages. Forcing the Worker to run first (run_worker_first) instead sends its own
+# ASSETS.fetch back through the same route and 307-loops.
+#
+# Why they matter beyond hygiene: the member page collects a password and names
+# Steam, Google and Apple, which is also exactly the shape of a phishing page.
+# Scanners cannot tell the difference from markup alone. form-action pins credential
+# submission to this origin, so the page provably cannot post a password anywhere
+# else, and base-uri stops an injected <base> from moving it — the behaviour a
+# phishing kit needs and this site does not.
+#
+# Deliberately no script-src / style-src / frame-src: Google Identity,
+# appleid.cdn-apple.com, api-merchant.payos.vn and Google Fonts all load
+# cross-origin, and a wrong value there breaks sign-in or checkout. Tighten those in
+# one deliberate, browser-verified step.
+/*
+  Content-Security-Policy: form-action 'self'; frame-ancestors 'self'; base-uri 'self'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Strict-Transport-Security: max-age=15552000
