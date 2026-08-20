@@ -33,6 +33,9 @@ outlook token, or a manual prompt) and submit it -> set the new password twice o
 the reset page and submit. Status OK means the new password is live (and recorded).
 
 Already-done accounts (present in the result file) are skipped; pass --force to redo.
+For an unattended/scheduled run use --yes, NOT --force: --yes skips the production
+confirmation prompt while leaving the already-done list in place, so the same
+account is not rotated over and over.
 
 --db mode: instead of a file, source accounts from the twitch rental DB
 (Cloudflare D1 'fungaming-rentals') whose rental is OVER (status 'available' with
@@ -59,9 +62,34 @@ accounts (bypassing the rental-over selection and the already-done skip). In
 --db mode they're loaded from the DB by login regardless of status; in file mode
 the input is filtered to those logins. Repeatable and comma-separated.
 
+--mode email changes the account's contact ADDRESS instead of its password, through
+Steam's HelpChangeEmail wizard. Two mailboxes are involved: Steam verifies identity
+with a code to the CURRENT address (the same first half as the password wizard, hence
+_wizard_identity_code), then confirms ownership with a second code sent to the NEW
+one. Both therefore have to be readable — an outlook/hotmail new address is read
+automatically, anything else prompts.
+
+One account per run, enforced: a single address cannot serve a batch, and pointing
+forty accounts at one mailbox would hand whoever holds it the ability to reset every
+one of those passwords.
+
+In --db mode a success also repoints steam_accounts.email. Pass
+--new-email-password to store the new mailbox's password too — without it the row
+keeps the OLD mailbox's password beside the NEW address, which looks usable and is
+not.
+
+CAUTION: an email change is not a password change. Whoever controls the address can
+reset the Steam password afterwards, and Steam may restrict the account and end
+active sessions — so do not run it on a login a customer is currently renting.
+The markup past the identity step is not pinned the way the reset-password page is;
+a miss dumps the page (chpw_changeemail_*.html) so the real selector can be added
+instead of guessed at again.
+
 Usage:
     python steam_change_password.py [accounts.txt] [--force] [--keep-open]
-    python steam_change_password.py --db [--remote] [--force] [--keep-open]
+    python steam_change_password.py --db --remote --account <login> --mode email \
+        --new-email new@outlook.com [--new-email-password <pw>]
+    python steam_change_password.py --db [--remote] [--force] [--yes] [--keep-open]
     python steam_change_password.py --db --remote --account egrot16122,ywhods4353
 """
 import json
@@ -103,6 +131,13 @@ STEAM_ACCOUNT_URL = "https://store.steampowered.com/account/"
 # Steam routes password changes through the help wizard.
 STEAM_CHANGE_PASSWORD_URL = (
     "https://help.steampowered.com/en/wizard/HelpChangePassword?redir=store/account/"
+)
+# Same wizard family as the password change, and it verifies identity the same way
+# (a code to the CURRENT address). What differs is the second half: after the new
+# address is submitted, Steam mails a confirmation code to the NEW mailbox, so a
+# change-email run needs to read TWO different mailboxes.
+STEAM_CHANGE_EMAIL_URL = (
+    "https://help.steampowered.com/en/wizard/HelpChangeEmail?redir=store/account/"
 )
 HEADLESS = False
 GUARD_CODE_WAIT_SEC = 120
@@ -936,15 +971,269 @@ def change_password(driver, acc, old_pass, new_pass):
         return "ERROR"
 
 
+# Steam's change-email page markup is not pinned the way the reset-password page is
+# (#password_reset / #password_reset_confirm were learned from a real run). These are
+# the plausible shapes, tried in order; a miss dumps the page so the real selector
+# can be added rather than guessed at again.
+NEW_EMAIL_INPUT_SELECTORS = (
+    "input#email",
+    "input#new_email",
+    "input[name='email']",
+    "input[name='new_email']",
+    "input[type='email']",
+)
+CONFIRM_EMAIL_INPUT_SELECTORS = (
+    "input#email_confirm",
+    "input#new_email_confirm",
+    "input[name='email_confirm']",
+    "input[name='reenter_email']",
+)
+
+
+def _first_displayed(driver, selectors):
+    """First visible element matching any of `selectors`, or None."""
+    for sel in selectors:
+        for el in driver.find_elements(By.CSS_SELECTOR, sel):
+            try:
+                if el.is_displayed():
+                    return el
+            except Exception:
+                continue
+    return None
+
+
+def _submit_wizard_form(driver, fallback_el):
+    """Click the wizard's submit button, falling back to Enter in the field."""
+    for sel in ("input[type='submit']", "button[type='submit']", "button.btn_medium"):
+        for el in driver.find_elements(By.CSS_SELECTOR, sel):
+            try:
+                if el.is_displayed():
+                    el.click()
+                    return True
+            except Exception:
+                continue
+    try:
+        fallback_el.send_keys(Keys.ENTER)
+        return True
+    except Exception:
+        return False
+
+
+def _wizard_identity_code(driver, acc, label):
+    """Shared first half of both wizards: ask Steam to email a verification code to
+    the account's CURRENT address, then read and submit it.
+
+    Returns None on success, or a status string on failure."""
+    try:
+        WebDriverWait(driver, 30).until(
+            lambda d: d.find_elements(By.CSS_SELECTOR, "a.help_wizard_button"))
+    except Exception:
+        pass
+    time.sleep(random.uniform(1.0, 2.0))
+
+    # Snapshot first: the endpoint returns "newest code in the mailbox" with no
+    # timestamp, so without this a stale code gets submitted and burns the attempt.
+    before_code = _read_code_api(acc)
+    if before_code:
+        print(f"  [{label}] mailbox already holds code {before_code} — will wait for a different one")
+
+    submit_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    clicked = driver.execute_script(
+        "for (const a of document.querySelectorAll('a.help_wizard_button')) {"
+        "  const href = a.getAttribute('href') || '';"
+        "  if (href.includes('HelpWithLoginInfoEnterCode')) { a.click(); return href; }"
+        "}"
+        "return '';"
+    )
+    if not clicked:
+        _dump_page(driver, label, "sendcode")
+        print(f"  [{label}] 'email code' button not found — dumped page.")
+        return "NO_SENDCODE_BUTTON"
+    print(f"  [{label}] requested email verification code (sent to the CURRENT address)")
+
+    try:
+        WebDriverWait(driver, 30).until(lambda d: d.find_elements(By.ID, "forgot_login_code"))
+    except Exception:
+        print(f"  [{label}] EnterCode page did not render (url={driver.current_url}).")
+        _dump_page(driver, label, "entercode")
+        return "NO_ENTERCODE"
+
+    code = ""
+    if _can_use_mail_api(acc):
+        print(f"  [{label}] waiting on /api/read-code for {acc['email']}...")
+        code = poll_new_code(acc, before_code)
+        if code:
+            print(f"  [{label}] got code {code} from the mail API")
+    elif acc.get("email") and not _is_graph_mailbox(acc.get("email")):
+        print(f"  [{label}] {acc['email']} is not outlook/hotmail — skipping the mail API")
+
+    if not code and acc.get("refresh_token") and acc.get("client_id"):
+        print(f"  [{label}] mail API had nothing; polling Graph directly...")
+        try:
+            code = asyncio.run(_fetch_steam_guard_code(
+                acc["email"], acc["refresh_token"], acc["client_id"], submit_iso)) or ""
+        except Exception as err:
+            print(f"  [{label}] code fetch failed: {err}")
+
+    if not code:
+        try:
+            code = input(f"  [{label}] enter the code emailed to {acc['email']}: ").strip()
+        except EOFError:
+            code = ""
+    if not code:
+        print(f"  [{label}] no verification code — aborting.")
+        return "NO_CODE"
+
+    code_input = driver.find_element(By.ID, "forgot_login_code")
+    code_input.clear()
+    code_input.send_keys(code)
+    print(f"  [{label}] entered code {code}")
+    if not _submit_wizard_form(driver, code_input):
+        return "NO_SUBMIT"
+    print(f"  [{label}] submitted verification code")
+    time.sleep(random.uniform(2.0, 4.0))
+
+    if driver.find_elements(By.ID, "forgot_login_code"):
+        print(f"  [{label}] code not accepted (still on EnterCode).")
+        _dump_page(driver, label, "entercode_after")
+        return "CODE_REJECTED"
+    return None
+
+
+def change_email(driver, acc, new_email, new_mail_acc):
+    """Move the account's contact address to `new_email`.
+
+    Two mailboxes are involved and both must be readable: Steam verifies identity
+    with a code to the CURRENT address, then confirms ownership with a second code
+    sent to the NEW one. `new_mail_acc` is an account-shaped dict for that second
+    mailbox so the existing code readers can be reused unchanged.
+
+    Returns a status string; "OK" means the address is live on the account.
+    """
+    label = acc["steam_user"]
+    try:
+        print(f"  [{label}] opening change-email: {STEAM_CHANGE_EMAIL_URL}")
+        driver.get(STEAM_CHANGE_EMAIL_URL)
+
+        failed = _wizard_identity_code(driver, acc, label)
+        if failed:
+            return failed
+
+        # Step 2: the new-address form.
+        try:
+            WebDriverWait(driver, 30).until(
+                lambda d: _first_displayed(d, NEW_EMAIL_INPUT_SELECTORS) is not None)
+        except Exception:
+            print(f"  [{label}] new-email form did not render (url={driver.current_url}).")
+            _dump_page(driver, label, "changeemail_form")
+            return "NO_EMAIL_FORM"
+
+        field = _first_displayed(driver, NEW_EMAIL_INPUT_SELECTORS)
+        field.clear()
+        field.send_keys(new_email)
+        confirm = _first_displayed(driver, CONFIRM_EMAIL_INPUT_SELECTORS)
+        if confirm is not None:
+            confirm.clear()
+            confirm.send_keys(new_email)
+        # Steam's forms validate on input events, not just on value assignment.
+        driver.execute_script(
+            "for (const el of arguments) {"
+            "  if (!el) continue;"
+            "  el.dispatchEvent(new Event('input', {bubbles: true}));"
+            "  el.dispatchEvent(new Event('change', {bubbles: true}));"
+            "}", field, confirm)
+        print(f"  [{label}] entered new address {new_email}")
+
+        # Snapshot the NEW mailbox before Steam is asked to mail it, for the same
+        # stale-code reason as above.
+        before_new = _read_code_api(new_mail_acc)
+        if not _submit_wizard_form(driver, field):
+            return "NO_SUBMIT"
+        print(f"  [{label}] submitted new address; Steam should now mail {new_email}")
+        time.sleep(random.uniform(2.0, 4.0))
+
+        # Step 3: confirm with the code sent to the NEW address.
+        code = ""
+        if _can_use_mail_api(new_mail_acc):
+            print(f"  [{label}] waiting on /api/read-code for the NEW mailbox {new_email}...")
+            code = poll_new_code(new_mail_acc, before_new)
+        elif not _is_graph_mailbox(new_email):
+            print(f"  [{label}] {new_email} is not outlook/hotmail — the confirmation "
+                  f"code cannot be read automatically")
+        if not code:
+            try:
+                code = input(f"  [{label}] enter the code emailed to the NEW address {new_email}: ").strip()
+            except EOFError:
+                code = ""
+        if not code:
+            print(f"  [{label}] no confirmation code for the new address — aborting.")
+            # Steam has not switched the address yet at this point, so the account
+            # is unchanged rather than half-migrated.
+            return "NO_NEW_CODE"
+
+        code_field = (driver.find_elements(By.ID, "forgot_login_code")
+                      or driver.find_elements(By.CSS_SELECTOR, "input[name*='code'], input#code"))
+        if not code_field:
+            _dump_page(driver, label, "changeemail_confirm")
+            print(f"  [{label}] confirmation-code field not found — dumped page.")
+            return "NO_CONFIRM_FIELD"
+        code_field[0].clear()
+        code_field[0].send_keys(code)
+        if not _submit_wizard_form(driver, code_field[0]):
+            return "NO_SUBMIT"
+        print(f"  [{label}] submitted confirmation code {code}")
+
+        end = time.time() + 30
+        while time.time() < end:
+            body = ""
+            try:
+                body = (driver.find_element(By.TAG_NAME, "body").text or "").lower()
+            except Exception:
+                pass
+            if ("email address has been changed" in body or "has been updated" in body
+                    or "successfully" in body):
+                print(f"  [{label}] ✅ email changed to {new_email}.")
+                return "OK"
+            time.sleep(1.0)
+
+        _dump_page(driver, label, "changeemail_after")
+        print(f"  [{label}] email change NOT confirmed — dumped page. Verify by hand "
+              f"at https://store.steampowered.com/account/ before trusting it.")
+        return "CHANGE_UNCONFIRMED"
+    except Exception as e:
+        print(f"  [{label}] change-email error: {e}")
+        return "ERROR"
+
+
+def update_db_email(db_id, new_email, new_mail_password, remote, key):
+    """Point the DB row at the new mailbox after a successful change.
+
+    The stored mail password is only overwritten when a new one is supplied: a row
+    left holding the OLD mailbox's password alongside the NEW address would be worse
+    than one holding nothing, because it looks usable."""
+    sets = [f"email = '{new_email.replace(chr(39), chr(39) * 2)}'"]
+    if new_mail_password:
+        sets.append(f"email_password_enc = '{_crypto('enc', new_mail_password, key)}'")
+    _d1(f"UPDATE steam_accounts SET {', '.join(sets)} WHERE id = {int(db_id)}", remote)
+
+
 def main():
     args = sys.argv[1:]
     force = "--force" in args
+    assume_yes = "--yes" in args
     keep_open = "--keep-open" in args
     use_db = "--db" in args
     remote = "--remote" in args
     # --account <login>[,<login>...] : force a password change for these specific
     # accounts (bypasses the rental-over selection and the already-done skip).
     account_logins = _cli_values(args, "account")
+    # --mode email changes the account's contact ADDRESS instead of its password.
+    mode = (_cli_values(args, "mode") or ["password"])[0].lower()
+    if mode not in ("password", "email"):
+        print("--mode must be 'password' or 'email'.")
+        sys.exit(1)
+    new_email = (_cli_values(args, "new-email") or [""])[0]
+    new_mail_password = (_cli_values(args, "new-email-password") or [""])[0]
     positional = [a for a in args if not a.startswith("--")]
     input_file = positional[0] if positional else INPUT_FILE
 
@@ -960,8 +1249,9 @@ def main():
         where = "REMOTE (production)" if remote else "local"
         try:
             if account_logins:
+                what = "email change" if mode == "email" else "password change"
                 print(f"[db] source: twitch D1 '{D1_DB_NAME}' ({where}) — FORCING "
-                      f"password change for {len(account_logins)} specified account(s): "
+                      f"{what} for {len(account_logins)} specified account(s): "
                       f"{', '.join(account_logins)}")
                 accounts = load_db_accounts_by_login(account_logins, remote, enc_key)
             else:
@@ -986,6 +1276,24 @@ def main():
         print("No accounts to process.")
         return
 
+    if mode == "email":
+        if not new_email:
+            print("--mode email needs --new-email <address>.")
+            sys.exit(1)
+        if "@" not in new_email or new_email.strip() != new_email:
+            print(f"--new-email does not look like an address: {new_email!r}")
+            sys.exit(1)
+        # One address cannot serve several accounts, and a bulk run would silently
+        # point the whole batch at one mailbox — whoever holds it could then reset
+        # every one of those passwords.
+        if len(accounts) != 1:
+            print(f"--mode email changes ONE account at a time; {len(accounts)} selected.")
+            print("Pick one with --account <login>.")
+            sys.exit(1)
+        if not _is_graph_mailbox(new_email):
+            print(f"note: {new_email} is not outlook/hotmail, so Steam's confirmation "
+                  f"code cannot be read automatically — you will be prompted for it.")
+
     done = set() if (force or account_logins) else load_done(result_file)
     todo = [a for a in accounts if a["steam_user"] not in done]
     print(f"Loaded {len(accounts)} account(s); {len(todo)} to process "
@@ -1007,10 +1315,17 @@ def main():
                 a["refresh_token"], a["client_id"] = tok
 
     # Production is irreversible (real password changes + live DB writes): confirm.
-    if use_db and remote and not force:
+    # --force also skips this, but it additionally re-does accounts already
+    # rotated, which is wrong for a scheduled run: nothing here removes an account
+    # from the selection after a success, so a forced hourly job would change the
+    # same passwords again every hour. --yes skips only the prompt.
+    if use_db and remote and not force and not assume_yes:
+        what = (f"move {todo[0]['steam_user']}'s contact email to {new_email}"
+                if mode == "email"
+                else f"change Steam passwords for {len(todo)} account(s)")
         try:
-            ans = input(f"[db] About to change Steam passwords for {len(todo)} account(s) "
-                        f"on PRODUCTION and update the live DB. Type 'yes' to proceed: ").strip().lower()
+            ans = input(f"[db] About to {what} on PRODUCTION and update the live DB. "
+                        f"Type 'yes' to proceed: ").strip().lower()
         except EOFError:
             ans = ""
         if ans not in ("yes", "y"):
@@ -1049,6 +1364,33 @@ def main():
             if not steam_login(driver, acc):
                 record(user, acc["email"], acc["steam_pass"], "", "LOGIN_FAILED")
                 print(f"  ❌ [{user}] LOGIN_FAILED")
+                continue
+            if mode == "email":
+                # An account-shaped dict for the NEW mailbox, so the existing code
+                # readers work on it unchanged.
+                new_mail_acc = {
+                    "steam_user": user,
+                    "email": new_email,
+                    "refresh_token": "",
+                    "client_id": "",
+                }
+                status = change_email(driver, acc, new_email, new_mail_acc)
+                if status == "OK" and use_db and acc.get("db_id") is not None:
+                    try:
+                        update_db_email(acc["db_id"], new_email, new_mail_password,
+                                        remote, enc_key)
+                        print(f"  [{user}] DB email updated -> {new_email}"
+                              + ("" if new_mail_password
+                                 else "  (mail password NOT updated — pass "
+                                      "--new-email-password so the row is usable)"))
+                    except Exception as e:
+                        print(f"  [{user}] DB email update FAILED: {e}")
+                        status = "OK_DB_UPDATE_FAILED"
+                # The password is untouched in this mode, so record the existing one
+                # rather than a generated one that was never set.
+                record(user, new_email, acc["steam_pass"], "", status)
+                icon = "✅" if status.startswith("OK") else "⚠️"
+                print(f"  {icon} [{user}] {status}")
                 continue
             status = change_password(driver, acc, acc["steam_pass"], new_pass)
             # On success in --db mode, write the new (encrypted) password back to
