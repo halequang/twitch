@@ -1442,6 +1442,13 @@ const rentalGame = GAMES[DEFAULT_GAME];
     border-radius: 999px;
   }
 
+  /* A plan whose own stock is gone, while others may still be rentable. */
+  .plan.sold-out {
+    opacity: 0.55;
+  }
+
+  .plan.sold-out .plan-price { color: var(--isle-green); }
+
   .plan-note {
     font-size: 12px;
     line-height: 1.5;
@@ -2741,13 +2748,32 @@ const rentalGame = GAMES[DEFAULT_GAME];
     for (const btn of document.querySelectorAll('.rent-btn')) btn.disabled = !enabled;
   }
 
+  /**
+   * Stock is per plan now: an account can be tagged for one plan only, so a card
+   * can be empty while its neighbour is not. Disabling every button on a single
+   * total would hide plans that are perfectly rentable.
+   */
+  function applyPlanStock(plans) {
+    for (const plan of plans || []) {
+      const btn = document.querySelector('.rent-btn[data-plan="' + plan.id + '"]');
+      if (!btn) continue;
+      const out = Number(plan.available) === 0;
+      btn.disabled = out;
+      btn.textContent = out ? 'Tạm hết' : 'Thuê ngay';
+      const card = btn.closest('.plan');
+      if (card) card.classList.toggle('sold-out', out);
+    }
+  }
+
   async function loadStock() {
     try {
       const res = await fetch('/api/rent/plans', { credentials: 'same-origin' });
       if (!res.ok) throw new Error(String(res.status));
       const data = await res.json();
       el('rentStock').textContent = String(data.available);
-      setPlansEnabled(data.available > 0);
+      applyPlanStock(data.plans);
+      // data.available is the best any single plan can do, so this only fires when
+      // every plan is empty — not when one tagged tier has run out.
       if (data.available === 0) rentNotice('Hiện đã hết tài khoản trống. Vui lòng quay lại sau.', false);
     } catch {
       el('rentStock').textContent = '—';

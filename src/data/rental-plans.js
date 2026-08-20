@@ -79,6 +79,40 @@ export const GAMES = {
   },
 };
 
+/**
+ * Accounts tagged in `internal_note` may only be rented on the plans listed here.
+ *
+ * The tag is how the shop marks a special account — "no_ban" being one that has
+ * never been banned, worth holding back for the plan people pay most for. This map
+ * is what makes that marking mean something at allocation time instead of being a
+ * note nobody enforces.
+ *
+ * Deliberately keyed off the existing internal_note rather than a new column: the
+ * note is what gets written when the account is imported, so there is no second
+ * place to keep in sync, and no migration to apply before it works.
+ *
+ * Matching is on a whole token, so an internal note reading "no_ban_check" or
+ * "maybe no_bans" does NOT count — a substring match would quietly restrict
+ * accounts nobody meant to restrict.
+ */
+export const TAG_ONLY_PLANS = {
+  no_ban: ['isle-7d-voip'],
+};
+
+/** Tags that must NOT be handed to this plan. */
+export function tagsBarredFrom(planId) {
+  return Object.entries(TAG_ONLY_PLANS)
+    .filter(([, plans]) => !plans.includes(planId))
+    .map(([tag]) => tag);
+}
+
+/** Tags this plan is the intended home for, so they can be preferred for it. */
+export function tagsPreferredBy(planId) {
+  return Object.entries(TAG_ONLY_PLANS)
+    .filter(([, plans]) => plans.includes(planId))
+    .map(([tag]) => tag);
+}
+
 export const DEFAULT_GAME = 'the-isle';
 
 export function findPlan(gameId, planId) {

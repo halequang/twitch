@@ -287,6 +287,47 @@ Pieces:
 Endpoints (Worker only — they need D1): `GET /api/rent/plans`,
 `POST /api/rent/checkout`, `GET /api/rent/orders`, `POST /api/payos/webhook`.
 
+### Reserving accounts for one plan (`no_ban`)
+
+An account whose `internal_note` carries the tag **`no_ban`** can only be rented on
+**`isle-7d-voip`** (the 80k full-perks week). The mapping lives in
+`TAG_ONLY_PLANS` in `src/data/rental-plans.js`; add tags or plans there.
+
+```
+internal_note: "bought day 2 · no_ban"   →  rentable on isle-7d-voip only
+internal_note: "no_ban_check pending"    →  ordinary account, no restriction
+```
+
+- **Keyed off the existing `internal_note`**, so there is no second field to keep in
+  sync and **no migration to apply** before it works — which also means it cannot
+  break production the way an unapplied column did.
+- **Matched as a whole token.** Separators (`·`, `,`, `;`, `|`) are normalised to
+  spaces and the note is padded, so `no_ban_check` and `no_bans` are different
+  words and stay unrestricted. A substring match would silently restrict accounts
+  nobody meant to.
+- **It excludes as well as prefers.** A day or plain-week rental is never handed a
+  tagged account, even when it is the only one free — that request is refused as
+  `out_of_stock` rather than quietly spending the good account. The VOIP week
+  prefers tagged accounts, so they are spent where they were meant to be rather
+  than sitting idle.
+- **Stock is therefore per plan.** `/api/rent/plans` returns `available` on each
+  plan, and the page disables just that card ("Tạm hết") instead of every button.
+  The headline figure is the best any single plan can do, so "hết tài khoản" only
+  appears when every plan is empty.
+- **Buying is unaffected.** `isle-buy` is nominally barred from the tag, but a
+  purchase acts on the account the customer already holds rather than claiming a
+  new one — so a VOIP renter can still buy their `no_ban` account. There is a test
+  for exactly that, since the renter most likely to buy would otherwise be the one
+  person who could not.
+
+To apply it to accounts you already have:
+
+```sql
+UPDATE steam_accounts
+   SET internal_note = TRIM(COALESCE(internal_note || ' · ', '') || 'no_ban')
+ WHERE login IN ('...');
+```
+
 ### Holding an account for one customer
 
 An account can be earmarked for a specific customer, so when they rent again they

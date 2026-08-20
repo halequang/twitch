@@ -14,7 +14,14 @@
  * requesting session.
  */
 
-import { DEFAULT_GAME, GAMES, findPlan, purchasePlan } from '../data/rental-plans.js';
+import {
+  DEFAULT_GAME,
+  GAMES,
+  findPlan,
+  purchasePlan,
+  tagsBarredFrom,
+  tagsPreferredBy,
+} from '../data/rental-plans.js';
 import { hasGuardFlag } from './steamcode.js';
 import {
   createPaymentLink,
@@ -152,13 +159,54 @@ export async function sweepExpiredRentals(db) {
  * With no email (an anonymous page view, or an Apple account without one) this
  * reports the unreserved count.
  */
-export async function stockByGame(db, game = DEFAULT_GAME, forEmail = null) {
+/* ─── account tags ────────────────────────────── */
+
+// internal_note is free text, so a tag is matched as a whole token: common
+// separators become spaces and the note is padded, turning "a · no_ban" into
+// " a no_ban " so '% no_ban %' hits while "no_ban_check" does not. A substring
+// match would quietly restrict accounts nobody meant to restrict.
+const tagTokenSql = (col) =>
+  `(' ' || REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${col}, ''), '·', ' '), ',', ' '), ';', ' '), '|', ' ') || ' ')`;
+
+// `prefix` because claimAccount aliases the table as `s`, where an unqualified
+// internal_note would be ambiguous; the stock count has no alias.
+function tagMatch(tag, prefix = '') {
+  // Tags come from a hardcoded map, never from a request — but this is inlined into
+  // SQL, so refuse anything that is not a plain token rather than trust that.
+  if (!/^[a-z0-9_]+$/.test(tag)) throw new Error(`unsafe account tag: ${tag}`);
+  return `${tagTokenSql(`${prefix}internal_note`)} LIKE '% ${tag} %'`;
+}
+
+/** ` AND NOT <tag> …` for every tag this plan must not be given. */
+function tagBarSql(planId, prefix = '') {
+  const barred = planId ? tagsBarredFrom(planId) : [];
+  return barred.length
+    ? ` AND ${barred.map((t) => `NOT ${tagMatch(t, prefix)}`).join(' AND ')}`
+    : '';
+}
+
+/** An ORDER BY fragment putting accounts earmarked for this plan first. */
+function tagPreferSql(planId, prefix = '') {
+  const preferred = planId ? tagsPreferredBy(planId) : [];
+  if (!preferred.length) return '';
+  return `CASE WHEN ${preferred.map((t) => tagMatch(t, prefix)).join(' OR ')} THEN 0 ELSE 1 END,\n             `;
+}
+
+export async function stockByGame(db, game = DEFAULT_GAME, forEmail = null, planId = null) {
   await sweepExpired(db);
+  return countStock(db, game, forEmail, planId);
+}
+
+/**
+ * The same count without the sweep, so a caller wanting one figure per plan does
+ * not run the sweep once per plan.
+ */
+async function countStock(db, game, forEmail, planId) {
   const row = await db
     .prepare(
       `SELECT COUNT(*) AS n FROM steam_accounts
         WHERE game = ? AND status = 'available'
-          AND (reserved_for IS NULL OR lower(reserved_for) = lower(?))`
+          AND (reserved_for IS NULL OR lower(reserved_for) = lower(?))${tagBarSql(planId)}`
     )
     .bind(game, forEmail ?? '')
     .first();
@@ -177,13 +225,19 @@ export async function stockByGame(db, game = DEFAULT_GAME, forEmail = null) {
  * Both rules live in one ORDER BY rather than two queries, because two would
  * reopen the race the single statement exists to close.
  */
-async function claimAccount(db, game, forEmail = null) {
+async function claimAccount(db, game, forEmail = null, planId = null) {
+  // Tags EXCLUDE as well as prefer: an account tagged for another plan is filtered
+  // out entirely, which is what stops a 20k day rental being handed a no_ban
+  // account held back for the 80k VOIP week.
+  //
   // Pick order, most specific first:
   //   1. reserved for this customer — it was set aside for them by name
-  //   2. stock no manager can claim: ungrouped, or in a group with no manager
+  //   2. earmarked for this plan by an internal_note tag — those accounts exist
+  //      for this plan, so spend them here rather than leaving them idle
+  //   3. stock no manager can claim: ungrouped, or in a group with no manager
   //      attached. The shop's own stock earns before a manager's does, so it is
   //      spent first and theirs is held back until it runs out.
-  //   3. lowest id, so the pool cycles predictably
+  //   4. lowest id, so the pool cycles predictably
   //
   // Aliased as `s` because the correlated EXISTS has to point at the row being
   // considered, not at the table the UPDATE is walking.
@@ -193,9 +247,10 @@ async function claimAccount(db, game, forEmail = null) {
         WHERE id = (
           SELECT s.id FROM steam_accounts s
            WHERE s.game = ? AND s.status = 'available'
-             AND (s.reserved_for IS NULL OR lower(s.reserved_for) = lower(?))
+             AND (s.reserved_for IS NULL OR lower(s.reserved_for) = lower(?))${tagBarSql(planId, 's.')}
            ORDER BY
              CASE WHEN s.reserved_for IS NULL THEN 1 ELSE 0 END,
+             ${tagPreferSql(planId, 's.')}
              CASE WHEN EXISTS (
                SELECT 1 FROM manager_groups mg WHERE mg.group_id = s.group_id
              ) THEN 1 ELSE 0 END,
@@ -214,15 +269,34 @@ async function claimAccount(db, game, forEmail = null) {
 export async function listPlans(env, game = DEFAULT_GAME, forEmail = null) {
   const catalogue = GAMES[game];
   if (!catalogue) return null;
-  // Counted for this viewer, so the number on the page is the number checkout
-  // will honour rather than including accounts held for someone else.
-  const available = env?.DB ? await stockByGame(env.DB, game, forEmail) : 0;
+
+  // Stock is per viewer AND per plan: an account can be held for another customer,
+  // or tagged for a plan other than this one. A single figure would advertise
+  // accounts a given plan cannot be given, and checkout would then refuse them as
+  // out_of_stock — worse than showing the smaller honest number.
+  //
+  // The sweep runs once here rather than once per plan.
+  let plans = catalogue.plans.map((p) => ({ ...p, available: 0 }));
+  let available = 0;
+  if (env?.DB) {
+    await sweepExpiredRentals(env.DB);
+    plans = await Promise.all(
+      catalogue.plans.map(async (p) => ({
+        ...p,
+        available: await countStock(env.DB, game, forEmail, p.id),
+      }))
+    );
+    // The headline figure is what this viewer could rent on their best plan, so
+    // "hết tài khoản" only ever means every plan is empty.
+    available = plans.reduce((max, p) => Math.max(max, p.available), 0);
+  }
+
   return {
     game,
     name: catalogue.name,
     blurb: catalogue.blurb,
     available,
-    plans: catalogue.plans,
+    plans,
   };
 }
 
@@ -299,7 +373,7 @@ export async function createCheckout(
     if (parent.account_id == null) return { status: 409, body: { error: 'no_account_yet' } };
     gameId = parent.game;
   } else {
-    const available = await stockByGame(db, gameId, user?.email ?? null);
+    const available = await stockByGame(db, gameId, user?.email ?? null, plan.id);
     if (available < 1) return { status: 409, body: { error: 'out_of_stock' } };
   }
 
@@ -432,7 +506,7 @@ export async function fulfilOrder(env, orderCode) {
   await sweepExpired(db);
   // order.user_email, not the live session: fulfilment also runs from the payOS
   // webhook, where there is no signed-in user to ask.
-  const accountId = await claimAccount(db, order.game, order.user_email ?? null);
+  const accountId = await claimAccount(db, order.game, order.user_email ?? null, order.plan_id);
 
   const ts = now();
   if (accountId == null) {
