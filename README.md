@@ -301,10 +301,14 @@ internal_note: "no_ban_check pending"    →  ordinary account, no restriction
 - **Keyed off the existing `internal_note`**, so there is no second field to keep in
   sync and **no migration to apply** before it works — which also means it cannot
   break production the way an unapplied column did.
-- **Matched as a whole token.** Separators (`·`, `,`, `;`, `|`) are normalised to
-  spaces and the note is padded, so `no_ban_check` and `no_bans` are different
-  words and stay unrestricted. A substring match would silently restrict accounts
-  nobody meant to.
+- **Matched as a whole token.** Punctuation around the word — `· , ; | ( ) [ ] { }
+  / \ " '` and whitespace — is normalised to spaces and the note is padded, so
+  every shape the shop actually writes works: `no_ban`, `(no_ban)`,
+  `(day 2 1 tuan, no_ban)`, `[no_ban] 1 tuan`, `1 tuan/no_ban`. Meanwhile
+  `no_ban_check` and `no_bans` are different words and stay unrestricted — a
+  substring match would silently restrict accounts nobody meant to. The separator
+  list is built programmatically rather than hand-nested, because the first version
+  stopped at four characters and let `(…, no_ban)` through unrestricted.
 - **It excludes as well as prefers.** A day or plain-week rental is never handed a
   tagged account, even when it is the only one free — that request is refused as
   `out_of_stock` rather than quietly spending the good account. The VOIP week

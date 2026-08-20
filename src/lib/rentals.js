@@ -165,8 +165,22 @@ export async function sweepExpiredRentals(db) {
 // separators become spaces and the note is padded, turning "a · no_ban" into
 // " a no_ban " so '% no_ban %' hits while "no_ban_check" does not. A substring
 // match would quietly restrict accounts nobody meant to restrict.
-const tagTokenSql = (col) =>
-  `(' ' || REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${col}, ''), '·', ' '), ',', ' '), ';', ' '), '|', ' ') || ' ')`;
+// Anything that is punctuation around a word rather than part of one. Built as a
+// list because a hand-nested REPLACE chain is where the first version went wrong:
+// it stopped at "· , ; |", so a note reading "(day 2, no_ban)" was NOT restricted —
+// the closing bracket sat against the tag and the token never matched.
+const TAG_SEPARATORS = ['·', ',', ';', '|', '(', ')', '[', ']', '{', '}', '/', '\\', '"', "'", '\t', '\n', '\r'];
+
+const sqlChar = (ch) => `'${ch.replace(/'/g, "''")}'`;
+
+const tagTokenSql = (col) => {
+  const normalised = TAG_SEPARATORS.reduce(
+    (expr, ch) => `REPLACE(${expr}, ${sqlChar(ch)}, ' ')`,
+    `COALESCE(${col}, '')`
+  );
+  // Padded so a tag at either end still has a space on both sides.
+  return `(' ' || ${normalised} || ' ')`;
+};
 
 // `prefix` because claimAccount aliases the table as `s`, where an unqualified
 // internal_note would be ambiguous; the stock count has no alias.
