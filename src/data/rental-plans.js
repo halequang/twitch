@@ -46,6 +46,20 @@ export const GAMES = {
         badge: '🔥 Tiết kiệm',
         featured: true,
       },
+      {
+        // Same week, with the in-game extras. `perks` is what the card renders as
+        // the "đặc quyền" box — without it this would be a second week plan at a
+        // higher price and no visible reason for it.
+        id: 'isle-7d-voip',
+        kicker: 'Gói đầy đủ',
+        label: '1 tuần',
+        icon: '🎙️',
+        hours: 24 * 7,
+        amount: 80000,
+        note: 'Nói chuyện & xem map trong game',
+        badge: '🔥 Full perks',
+        perks: ['VOIP', 'MAP'],
+      },
     ],
     // Buying the account outright instead of renting it. Offered to a customer who
     // already holds one: that exact login becomes theirs and leaves the pool for
