@@ -137,6 +137,16 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       <button type="submit" class="btn">Thêm vào kho</button>
     </form>
 
+    <div class="listbar">
+      <input type="search" id="accountsQ" class="listbar-q"
+             placeholder="Tìm theo tên tài khoản hoặc email…" />
+      <span class="listbar-count" id="accountsCount"></span>
+      <span class="listbar-pager">
+        <button type="button" class="mini" id="accountsPrev">‹ Trước</button>
+        <span id="accountsPage"></span>
+        <button type="button" class="mini" id="accountsNext">Sau ›</button>
+      </span>
+    </div>
     <div class="table-wrap">
       <table class="tbl" id="accountsTable">
         <thead>
@@ -150,6 +160,16 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     </div>
 
     <h2 class="head spaced">Đơn hàng</h2>
+    <div class="listbar">
+      <input type="search" id="ordersQ" class="listbar-q"
+             placeholder="Tìm theo mã đơn, email khách hoặc tên tài khoản…" />
+      <span class="listbar-count" id="ordersCount"></span>
+      <span class="listbar-pager">
+        <button type="button" class="mini" id="ordersPrev">‹ Trước</button>
+        <span id="ordersPage"></span>
+        <button type="button" class="mini" id="ordersNext">Sau ›</button>
+      </span>
+    </div>
     <div class="table-wrap">
       <table class="tbl" id="ordersTable">
         <thead>
@@ -392,6 +412,35 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
   .soon { border-left: 3px solid var(--ad-amber); }
 
   /* Red, not amber: an expiry is scheduled, a report is somebody stuck now. */
+  .listbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+
+  .listbar-q {
+    flex: 1 1 260px;
+    min-width: 220px;
+    padding: 7px 10px;
+    font: inherit;
+    font-size: 13px;
+    border: 1px solid var(--ad-line);
+    border-radius: 4px;
+  }
+
+  .listbar-count { font-size: 12px; color: var(--ad-text-mute); }
+
+  .listbar-pager {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--ad-text-dim);
+  }
+
   .daily { border-left: 3px solid var(--ad-accent); }
 
   .report-totals {
@@ -814,9 +863,6 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
   let IS_OWNER = false;
   let GROUPS = [];
-  // Kept so the order editor can offer a "set this account" picker without
-  // re-fetching the pool every time a row is opened.
-  let ACCOUNTS = [];
 
   const a_groupId = (account) => (account.groupId == null ? null : Number(account.groupId));
 
@@ -866,7 +912,6 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
   }
 
   function renderAccounts(accounts) {
-    ACCOUNTS = accounts;
     const body = el('accountsBody');
     body.textContent = '';
     if (!accounts.length) {
@@ -964,7 +1009,10 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       edit.type = 'button';
       edit.className = 'mini';
       edit.textContent = 'Sửa';
-      edit.addEventListener('click', () => openOrderEditor(o, tr));
+      edit.addEventListener('click', () => {
+        openOrderEditor(o, tr).catch((err) =>
+          notice('Không mở được trình sửa đơn: ' + err.message, true));
+      });
       actions.appendChild(edit);
       tr.appendChild(actions);
 
@@ -978,7 +1026,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
    * stock, sitting on an account that turned out to be banned, and orders whose
    * account was never released.
    */
-  function openOrderEditor(order, afterRow) {
+  async function openOrderEditor(order, afterRow) {
     // One editor at a time, or two open rows can disagree about the same account.
     document.querySelectorAll('tr.order-editor').forEach((r) => r.remove());
 
@@ -1009,9 +1057,16 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     keep.value = '';
     keep.textContent = order.accountLogin ? `— giữ ${order.accountLogin} —` : '— chưa gán —';
     account.appendChild(keep);
-    // Only accounts that can actually be claimed, plus a clear marker on the ones
-    // a ban check has already condemned.
-    for (const a of ACCOUNTS.filter((x) => x.status === 'available')) {
+    // Fetched rather than read from the rendered page: the table now shows one page
+    // at a time, and an assignable account can sit on any of them. The pool is small
+    // (a handful at a time), so one request is cheaper than paging to find them.
+    let assignable = [];
+    try {
+      assignable = (await api('accounts?status=available&limit=200')).accounts || [];
+    } catch (err) {
+      notice('Không tải được danh sách tài khoản trống: ' + err.message, true);
+    }
+    for (const a of assignable) {
       const opt = document.createElement('option');
       opt.value = String(a.id);
       opt.textContent = a.login + (a.banState === 'banned' ? '  ⚠ BANNED' : '');
@@ -1051,7 +1106,8 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       try {
         await api('orders/' + order.orderCode, { method: 'PATCH', body: JSON.stringify(payload) });
         tr.remove();
-        await loadAll();
+        // Both lists: assigning an account changes its status too.
+        await Promise.all([loadOrdersPage(), loadAccountsPage(), loadSummary()]);
       } catch (err) {
         // A refused ban assignment is the one worth offering to override, and only
         // after the operator has been told why.
@@ -1063,7 +1119,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
                 body: JSON.stringify({ ...payload, force: true }),
               });
               tr.remove();
-              await loadAll();
+              await Promise.all([loadOrdersPage(), loadAccountsPage(), loadSummary()]);
               return;
             } catch (err2) {
               notice('Vẫn không gán được: ' + err2.message, true);
@@ -1282,6 +1338,80 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     }
   }
 
+  /* ─── paged lists ───────────────────────────────
+     The tables outgrew "fetch everything": 102 accounts and 225 orders, both
+     climbing. Each list keeps its own page and query so an edit does not throw the
+     operator back to page 1 of an unfiltered list. */
+
+  const views = {
+    accounts: { page: 1, q: '', limit: 50 },
+    orders: { page: 1, q: '', limit: 50 },
+  };
+
+  function renderPager(name, meta) {
+    const view = views[name];
+    // Trust the server's page number: it clamps, so asking for page 9 of 3 lands on
+    // 3 and the control must agree with what is actually on screen.
+    if (meta) view.page = meta.page;
+    const total = meta?.total ?? 0;
+    const pages = meta?.pages ?? 1;
+    el(`${name}Count`).textContent = view.q
+      ? `${total} kết quả cho “${view.q}”`
+      : `${total} bản ghi`;
+    el(`${name}Page`).textContent = `Trang ${meta?.page ?? 1}/${pages}`;
+    el(`${name}Prev`).disabled = (meta?.page ?? 1) <= 1;
+    el(`${name}Next`).disabled = (meta?.page ?? 1) >= pages;
+  }
+
+  function listQuery(name) {
+    const view = views[name];
+    const params = new URLSearchParams({ page: String(view.page), limit: String(view.limit) });
+    if (view.q) params.set('q', view.q);
+    return params.toString();
+  }
+
+  async function loadAccountsPage() {
+    const data = await api('accounts?' + listQuery('accounts'));
+    renderAccounts(data.accounts);
+    renderPager('accounts', data.page);
+  }
+
+  async function loadOrdersPage() {
+    const data = await api('orders?' + listQuery('orders'));
+    renderOrders(data.orders);
+    renderPager('orders', data.page);
+  }
+
+  const LOADERS = { accounts: loadAccountsPage, orders: loadOrdersPage };
+
+  function wireList(name) {
+    const input = el(`${name}Q`);
+    let timer = null;
+    input?.addEventListener('input', () => {
+      // Debounced: typing an order code is eight keystrokes, and each one would
+      // otherwise be a round trip that could land out of order.
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        views[name].q = input.value.trim();
+        views[name].page = 1; // a new search starts at the beginning
+        LOADERS[name]().catch((err) => notice('Tìm kiếm thất bại: ' + err.message, true));
+      }, 300);
+    });
+    el(`${name}Prev`)?.addEventListener('click', () => {
+      if (views[name].page > 1) {
+        views[name].page -= 1;
+        LOADERS[name]().catch((err) => notice('Không tải được trang: ' + err.message, true));
+      }
+    });
+    el(`${name}Next`)?.addEventListener('click', () => {
+      views[name].page += 1;
+      LOADERS[name]().catch((err) => notice('Không tải được trang: ' + err.message, true));
+    });
+  }
+
+  wireList('accounts');
+  wireList('orders');
+
   el('reportsAll')?.addEventListener('change', loadReports);
 
   function renderReport(r) {
@@ -1295,7 +1425,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     const parts = [];
     if (w.onBannedAccounts) {
       parts.push(
-        `${w.onBannedAccounts} đơn trên tài khoản đã bị ban (${fmtVnd(w.onBannedRevenue)}) — khách không đăng nhập được`
+        `${w.onBannedAccounts} đơn trên tài khoản đã bị ban (${fmtVnd(w.onBannedRevenue)})`
       );
     }
     if (w.undelivered) {
@@ -1613,7 +1743,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
           method: 'PATCH',
           body: JSON.stringify(payload),
         });
-        renderAccounts(data.accounts);
+        await loadAccountsPage();
         notice('Đã cập nhật tài khoản #' + account.id + '.', false);
         loadSummary();
       } catch (err) {
@@ -1642,7 +1772,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     if (!confirm(`Xoá tài khoản "${account.login}"? Lịch sử đơn hàng vẫn được giữ.`)) return;
     try {
       const data = await api('accounts/' + account.id, { method: 'DELETE' });
-      renderAccounts(data.accounts);
+      await loadAccountsPage();
       notice('Đã xoá tài khoản "' + account.login + '".', false);
       loadSummary();
     } catch (err) {
@@ -1656,7 +1786,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
         if (!ok) return;
         try {
           const data = await api('accounts/' + account.id + '?force=1', { method: 'DELETE' });
-          renderAccounts(data.accounts);
+          await loadAccountsPage();
           notice('Đã xoá tài khoản đang thuê "' + account.login + '".', true);
           loadSummary();
         } catch (e2) {
@@ -1676,7 +1806,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     submit.disabled = true;
     try {
       const data = await api('accounts', { method: 'POST', body: JSON.stringify(payload) });
-      renderAccounts(data.accounts);
+      await loadAccountsPage();
       notice('Đã thêm "' + payload.login + '" vào kho.', false);
       form.reset();
       loadSummary();
@@ -1755,10 +1885,11 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
   async function loadAll() {
     try {
-      const [groups, accounts, orders] = await Promise.all([api('groups'), api('accounts'), api('orders')]);
+      const groups = await api('groups');
       renderGroups(groups.groups);
-      renderAccounts(accounts.accounts);
-      renderOrders(orders.orders);
+      // Through the paged loaders, so the pagers reflect the current page and query
+      // rather than being blank until the first interaction.
+      await Promise.all([loadAccountsPage(), loadOrdersPage()]);
       await Promise.all([loadExpiring(), loadReports(), loadReport()]);
       if (IS_OWNER) {
         try {

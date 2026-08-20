@@ -142,14 +142,63 @@ const ACCOUNT_FROM = `
   LEFT JOIN account_groups g ON g.id = a.group_id
   LEFT JOIN orders o ON o.account_id = a.id AND o.status = 'active'`;
 
-async function listAccounts(env, actor) {
+/**
+ * Escapes the LIKE wildcards inside a search term.
+ *
+ * Binding the value stops injection but does NOT stop `%` and `_` from behaving as
+ * wildcards, so typing a single `%` in the search box matched every row. Paired with
+ * `ESCAPE '\\'` in the query so a typed wildcard searches for itself.
+ */
+function likeTerm(value) {
+  return `%${String(value).replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+}
+
+/**
+ * Page and search parameters from the query string, clamped.
+ *
+ * `q` is always bound, never interpolated: it is user input reaching a LIKE clause.
+ */
+function paging(query, { defaultLimit = 50, maxLimit = 200 } = {}) {
+  const limit = Math.min(Math.max(Number(query?.limit) || defaultLimit, 1), maxLimit);
+  const page = Math.max(Number(query?.page) || 1, 1);
+  const raw = typeof query?.q === 'string' ? query.q.trim().slice(0, 80) : '';
+  return { limit, page, offset: (page - 1) * limit, q: raw };
+}
+
+function pageMeta({ total, limit, page }) {
+  const pages = Math.max(1, Math.ceil(total / limit));
+  return { total, page: Math.min(page, pages), pages, limit };
+}
+
+async function listAccounts(env, actor, query) {
   const where = scope(actor, 'a.group_id');
-  const rows = await env.DB.prepare(
-    `SELECT ${ACCOUNT_COLUMNS} ${ACCOUNT_FROM} WHERE 1 = 1${where.sql} ORDER BY a.id`
+  const { limit, page, offset, q } = paging(query);
+
+  // Account name is what an operator has in hand; email is free to include and is
+  // the other thing written on a sticky note.
+  const search = q ? " AND (a.login LIKE ? ESCAPE '\\' OR a.email LIKE ? ESCAPE '\\')" : '';
+  const searchBinds = q ? [likeTerm(q), likeTerm(q)] : [];
+  // Lets the order editor pull the assignable pool without paging through
+  // everything, since an available account may sit on any page.
+  const statusFilter = typeof query?.status === 'string' && query.status ? ' AND a.status = ?' : '';
+  const statusBinds = statusFilter ? [query.status] : [];
+
+  const counted = await env.DB.prepare(
+    `SELECT COUNT(*) AS n ${ACCOUNT_FROM} WHERE 1 = 1${where.sql}${search}${statusFilter}`
   )
-    .bind(...where.binds)
+    .bind(...where.binds, ...searchBinds, ...statusBinds)
+    .first();
+
+  const rows = await env.DB.prepare(
+    `SELECT ${ACCOUNT_COLUMNS} ${ACCOUNT_FROM}
+      WHERE 1 = 1${where.sql}${search}${statusFilter}
+      ORDER BY a.id
+      LIMIT ? OFFSET ?`
+  )
+    .bind(...where.binds, ...searchBinds, ...statusBinds, limit, offset)
     .all();
-  return (rows?.results ?? []).map((r) => ({
+  const meta = pageMeta({ total: Number(counted?.n ?? 0), limit, page });
+  const items = (rows?.results ?? []).map((r) => ({
     id: r.id,
     groupId: r.group_id ?? null,
     groupName: r.group_name ?? null,
@@ -175,6 +224,7 @@ async function listAccounts(env, actor) {
         }
       : null,
   }));
+  return { items, meta };
 }
 
 async function createAccount(env, actor, body) {
@@ -220,7 +270,7 @@ async function createAccount(env, actor, body) {
     )
     .run();
 
-  return { status: 200, body: { ok: true, accounts: await listAccounts(env, actor) } };
+  return { status: 200, body: { ok: true, accounts: (await listAccounts(env, actor)).items } };
 }
 
 async function updateAccount(env, actor, id, body) {
@@ -304,7 +354,7 @@ async function updateAccount(env, actor, id, body) {
     .bind(...binds)
     .run();
 
-  return { status: 200, body: { ok: true, accounts: await listAccounts(env, actor) } };
+  return { status: 200, body: { ok: true, accounts: (await listAccounts(env, actor)).items } };
 }
 
 async function deleteAccount(env, actor, id, force) {
@@ -332,7 +382,7 @@ async function deleteAccount(env, actor, id, force) {
     env.DB.prepare(`DELETE FROM steam_accounts WHERE id = ?`).bind(id),
   ]);
 
-  return { status: 200, body: { ok: true, accounts: await listAccounts(env, actor) } };
+  return { status: 200, body: { ok: true, accounts: (await listAccounts(env, actor)).items } };
 }
 
 /** Explicit, separate call — credentials never ride along with a listing. */
@@ -367,23 +417,52 @@ async function revealAccount(env, actor, id) {
 
 /* ─── orders ──────────────────────────────────── */
 
-async function listAllOrders(env, actor, limit) {
+async function listAllOrders(env, actor, query) {
   // A manager sees orders that used one of THEIR accounts. Orders with no
   // account yet (pending, or whose account was deleted) are shop-wide, so they
   // stay with the owner rather than leaking across groups.
   const where = scope(actor, 'a.group_id');
+  const { limit, page, offset, q } = paging(query);
+
+  // An order id is the thing customers quote, so a bare number matches the code
+  // exactly rather than as a substring — searching "51523907" should not also
+  // return every order whose code contains those digits. Anything else is treated
+  // as text and matched against the customer's email and the account login, which
+  // is how "who has account X?" gets answered.
+  const numeric = /^\d+$/.test(q);
+  const search = q
+    ? numeric
+      ? " AND (o.order_code = ? OR o.user_email LIKE ? ESCAPE '\\' OR a.login LIKE ? ESCAPE '\\')"
+      : " AND (o.user_email LIKE ? ESCAPE '\\' OR a.login LIKE ? ESCAPE '\\')"
+    : '';
+  const searchBinds = q
+    ? numeric
+      ? [Number(q), likeTerm(q), likeTerm(q)]
+      : [likeTerm(q), likeTerm(q)]
+    : [];
+
+  const counted = await env.DB.prepare(
+    `SELECT COUNT(*) AS n
+       FROM orders o
+       LEFT JOIN steam_accounts a ON a.id = o.account_id
+      WHERE 1 = 1${where.sql}${search}`
+  )
+    .bind(...where.binds, ...searchBinds)
+    .first();
+
   const rows = await env.DB.prepare(
     `SELECT o.*, a.login AS account_login, a.group_id AS account_group
        FROM orders o
        LEFT JOIN steam_accounts a ON a.id = o.account_id
-      WHERE 1 = 1${where.sql}
+      WHERE 1 = 1${where.sql}${search}
       ORDER BY o.created_at DESC
-      LIMIT ?`
+      LIMIT ? OFFSET ?`
   )
-    .bind(...where.binds, Math.min(Number(limit) || 100, 500))
+    .bind(...where.binds, ...searchBinds, limit, offset)
     .all();
+  const meta = pageMeta({ total: Number(counted?.n ?? 0), limit, page });
 
-  return (rows?.results ?? []).map((o) => ({
+  const items = (rows?.results ?? []).map((o) => ({
     orderCode: o.order_code,
     userKey: o.user_key,
     userEmail: o.user_email ?? null,
@@ -398,6 +477,7 @@ async function listAllOrders(env, actor, limit) {
     paidAt: o.paid_at ?? null,
     expiresAt: o.expires_at ?? null,
   }));
+  return { items, meta };
 }
 
 async function summary(env, actor) {
@@ -869,7 +949,8 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
   }
 
   if (path === '/api/admin/orders' && method === 'GET') {
-    return { status: 200, body: { orders: await listAllOrders(env, actor, query?.limit) } };
+    const { items, meta } = await listAllOrders(env, actor, query);
+    return { status: 200, body: { orders: items, page: meta } };
   }
 
   // Rentals about to end, so the owner can rotate passwords / chase renewals
@@ -1064,7 +1145,10 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
   /* ── accounts ── */
 
   if (path === '/api/admin/accounts') {
-    if (method === 'GET') return { status: 200, body: { accounts: await listAccounts(env, actor) } };
+    if (method === 'GET') {
+      const { items, meta } = await listAccounts(env, actor, query);
+      return { status: 200, body: { accounts: items, page: meta } };
+    }
     if (method === 'POST') return createAccount(env, actor, body);
     return bad('method_not_allowed', 405);
   }

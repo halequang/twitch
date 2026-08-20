@@ -649,6 +649,29 @@ are all out, manager-owned ones are allocated normally.
 Note that allocation now reads `manager_groups`, so migration `0005` is required
 for renting to work at all — not just for the admin panel.
 
+## Paging and search in the panel
+
+`GET /api/admin/accounts` and `/api/admin/orders` take `?page=`, `?limit=` (max 200,
+default 50) and `?q=`, and return the rows plus
+`page: {total, page, pages, limit}`. The panel shows a search box and a pager above
+each table. Both were fetching everything, which stopped being reasonable at 102
+accounts and 225 orders, both climbing.
+
+- **Accounts** search by login or email.
+- **Orders** search by order code, customer email, or account login — so "who has
+  account X?" is answerable. A search that is **all digits matches the order code
+  exactly**: looking up `51523907` should not also return `515239071`.
+- **LIKE wildcards in the search term are escaped** (`ESCAPE '\'`). Binding the value
+  stops injection but not `%` behaving as a wildcard, and a lone `%` used to match
+  every row.
+- **Each list keeps its own page and query**, so editing a row reloads the page you
+  were on instead of throwing you back to page 1 of an unfiltered list.
+- **Typing is debounced** (300ms); a new search resets to page 1; the pager trusts
+  the server's clamped page number so the control cannot disagree with the rows.
+- `?status=` filters accounts, which is how the order editor loads the assignable
+  pool. It has to: the table now holds one page, and an available account can sit on
+  any of them.
+
 ## Fixing an order by hand
 
 `PATCH /api/admin/orders/<orderCode>` with `{status?, accountId?, hours?, force?}`,
