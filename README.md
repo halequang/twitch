@@ -44,11 +44,22 @@ npm run wrangler:dev   # Run Cloudflare Worker against built ./dist (port 8788)
 ## Deploy
 
 ```bash
-npm run deploy         # astro build && wrangler deploy
+npm run deploy          # astro build && npm run migrate && wrangler deploy
+npm run migrate         # apply outstanding migrations to production
+npm run migrate:local   # ...to the local dev DB
+npm run migrate:list    # what is outstanding, without applying it
 ```
 
-After deploy, the Worker is live at the routes configured in `wrangler.toml`
-(`fungamingvn.shop/*` and `www.fungamingvn.shop/*`).
+Migrations run **before** the Worker goes out, so new code never meets an old
+schema, and the steps are chained with `&&` — a failed migration aborts the deploy
+rather than shipping against a database that could not be updated.
+
+Migrations are tracked by wrangler in a `d1_migrations` table, so re-running is a
+no-op. They were originally applied by hand with `d1 execute --file`, which left
+that ledger empty; it has since been backfilled with `0001`–`0011` after verifying
+each one's columns and tables were genuinely present in production. If you ever add
+a migration by hand again, insert its filename into `d1_migrations` too, or the next
+deploy will try to re-run it and fail on a duplicate column.
 
 ## Structure
 

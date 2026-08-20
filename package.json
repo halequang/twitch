@@ -8,8 +8,11 @@
     "build": "astro build",
     "preview": "astro preview",
     "wrangler:dev": "wrangler dev",
-    "deploy": "astro build && wrangler deploy",
-    "upload-images": "bash scripts/upload-images.sh"
+    "deploy": "astro build && npm run migrate && wrangler deploy",
+    "upload-images": "bash scripts/upload-images.sh",
+    "migrate": "wrangler d1 migrations apply fungaming-rentals --remote",
+    "migrate:local": "wrangler d1 migrations apply fungaming-rentals --local",
+    "migrate:list": "wrangler d1 migrations list fungaming-rentals --remote"
   },
   "dependencies": {
     "astro": "^4.16.0"
