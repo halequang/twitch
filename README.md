@@ -779,6 +779,11 @@ mail was refused, because the footer is where the trouble was.
 
 Other guards:
 
+- **The page explains the order of operations.** A `guard` rental shows numbered
+  steps, because the button returns the *newest* code in the mailbox: pressing it
+  before triggering the Steam login hands back a previous code, which Steam rejects
+  as used. That one detail is the difference between the feature working and looking
+  broken, so it is step 1 and it is repeated as a warning.
 - **Only accounts marked `guard`.** The button appears, and the endpoint answers, only
   when the word `guard` is a tag in the account's `internal_note` (or `note`). Most
   accounts never ask for an emailed code, and offering it there promises a code that
