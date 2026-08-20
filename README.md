@@ -748,10 +748,24 @@ code" would therefore often return exactly the wrong one.
 So `classifyCode` in `src/lib/steamcode.js` uses a positive allowlist for login
 wording, a denylist for credential-change wording, and **refuses anything it does not
 recognise**. Fail closed: a refused renter is a support ticket, a served
-credential-change code is a stolen account. The denylist is tested against the real
-email body pulled from this shop's own mailbox; the login half is Steam's documented
-wording and is not yet confirmed against a captured sample — if it is wrong the
-result is a refusal, logged as `refused_purpose`.
+credential-change code is a stolen account.
+
+Both halves are built from mail actually seen on this pool, and Steam **localises**
+these, so the patterns are per-language:
+
+- login (zh, this pool's locale): `看起来您正在尝试使用新设备登录…Steam 令牌验证码`
+- change (en): `the code you need to change your Steam login credentials`
+- change (en): `the confirmation code that you need to update your email address`
+
+That last one is why the lists are written from captured mail rather than from
+imagination — it contains no word for "change", and an earlier denylist missed it
+entirely. It only failed safe because unrecognised wording is refused.
+
+The login patterns are deliberately narrow, anchored on phrases that only make sense
+for a sign-in. A loose one is the single mistake that matters: it would pass a
+credential-change mail in a language whose denylist entry is still missing. A login
+mail in an unhandled language is refused and logged as `refused_purpose` — that is the
+signal to add its wording.
 
 Other guards:
 

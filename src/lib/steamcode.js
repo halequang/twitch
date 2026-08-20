@@ -31,31 +31,57 @@ export const CODE_MAX_PER_RENTAL = 10;
 const now = () => Math.floor(Date.now() / 1000);
 
 /**
- * Wording that means "this code changes the account", verified against real emails
- * in this shop's own mailboxes:
+ * Wording that means "this code changes the account". The first two are verbatim from
+ * this shop's own mailboxes:
  *   "Here is the code you need to change your Steam login credentials: 89RXY"
+ *   "Here's the confirmation code that you need to update your email address: H84G2"
+ *
+ * The second one is why this list is written from captured mail rather than from
+ * imagination: "update your email address" does not contain the word change, and an
+ * earlier version of this list missed it entirely. It only failed safe because
+ * anything unrecognised is refused.
+ *
+ * Steam localises these, so the Chinese equivalents are here too. Those are not
+ * captured samples — no Chinese change-mail has appeared yet — but a denylist entry
+ * that never matches costs nothing, whereas a missing one costs an account.
  */
 const CREDENTIAL_CHANGE_PATTERNS = [
   /change your steam login credentials/i,
   /change your (?:password|email|login)/i,
+  /update your email address/i,
   /reset your password/i,
   /remove steam guard/i,
   /recover(?:ing)? your account/i,
+  // zh: 更改/修改/重置 … 密码 | 登录凭据 | 电子邮件/邮箱
+  /(?:更改|修改|重置|变更)[^。\n]{0,20}(?:密[码碼]|登录凭据|登入憑據)/,
+  /(?:更改|修改|更新|变更)[^。\n]{0,20}(?:电子邮件|電子郵件|邮箱|郵箱|邮件地址)/,
+  /(?:移除|删除|移除掉)[^。\n]{0,20}Steam\s*(?:令牌|驗證器|验证器)/,
+  /(?:找回|恢复|恢復)[^。\n]{0,10}(?:帐户|帳戶|账户)/,
 ];
 
 /**
- * Wording that means "this code lets you sign in". Steam's login mail reads
- * "Here is the Steam Guard code you need to login to account <name>".
+ * Wording that means "this code lets you sign in" — the only kind handed over.
  *
- * This half is not verified against a captured sample: the mailboxes held no login
- * code when this was written, because the accounts were not being signed into from
- * new devices. If the wording differs, the outcome is a refusal — safe, and
- * visible in steam_code_requests as refused_purpose.
+ * The Chinese entries are verbatim from a real login mail on this pool, which is
+ * mostly Chinese-locale:
+ *   "看起来您正在尝试使用新设备登录。此处是您访问帐户所需的 Steam 令牌验证码：… V9MN7"
+ *
+ * Kept deliberately narrow, anchored on phrases that only make sense for a sign-in
+ * ("using a new device", "token verification code"). A loose pattern here is the
+ * one mistake that matters: it would let a credential-change mail through in a
+ * language whose denylist entry is missing.
  */
 const LOGIN_PATTERNS = [
   /steam guard code/i,
   /code you need to (?:log ?in|login|sign ?in)/i,
   /use this code to (?:log ?in|login|sign ?in)/i,
+  /(?:logging|log|sign) ?in(?:g)? (?:with|from|using) a new device/i,
+  // zh: 使用新设备登录 — only a sign-in mail says this.
+  /使用新[设設][备備]登[录錄]/,
+  // zh: Steam 令牌验证码 — the login token code, as opposed to a change confirmation.
+  /Steam\s*令牌[验驗][证證]码?/,
+  /[访訪][问問]帐[户戶]所需/,
+  /[访訪][问問][账帳][户戶]所需/,
 ];
 
 /**
