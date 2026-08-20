@@ -85,14 +85,53 @@ const LOGIN_PATTERNS = [
 ];
 
 /**
+ * Sentences that give advice rather than state the email's purpose.
+ *
+ * These must be removed before classifying. A real login mail on this pool ends with
+ * "如果这不是您尝试登录，建议您重置自己的 Steam 密码。" — "if this wasn't you, reset
+ * your password" — and matching that as intent refused every genuine login code. The
+ * English change mail mirrors it ("If you are not trying to change..."), so stripping
+ * advice helps both directions: what is left is what the mail is *for*.
+ */
+const ADVISORY_SENTENCE = [
+  // zh: conditionals and cautions
+  /^\s*(?:如果|若|倘若|建议|不是您|切勿|请勿|您会收到)/,
+  // en
+  /^\s*if\b/i,
+  /if (?:you are|this was ?n[o']?t|it was ?n[o']?t)/i,
+  /you are receiving this/i,
+  /please ignore/i,
+  /(?:never|do not|don't) share/i,
+];
+
+/** Splits into sentences on both Latin and CJK terminators, plus line breaks. */
+function sentences(text) {
+  return String(text ?? '')
+    .split(/[\n\r]+|(?<=[。！？!?])/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+/**
  * Decides whether a code may be handed over.
+ *
+ * Classified on the purpose sentences only — advice is stripped first, because
+ * Steam's login mail advises resetting the password and its change mail advises
+ * ignoring the message, so the advice describes the opposite of the intent as often
+ * as not.
+ *
  * @returns {'login' | 'credential_change' | 'unknown'}
  */
 export function classifyCode(body) {
-  const text = String(body ?? '');
-  // Denylist first: if an email somehow matches both, the dangerous reading wins.
-  if (CREDENTIAL_CHANGE_PATTERNS.some((re) => re.test(text))) return 'credential_change';
-  if (LOGIN_PATTERNS.some((re) => re.test(text))) return 'login';
+  const purpose = sentences(body)
+    .filter((line) => !ADVISORY_SENTENCE.some((re) => re.test(line)))
+    .join('\n');
+
+  // Denylist still first, but now against intent rather than against the footer: an
+  // email that *states* it changes credentials is refused even if it also mentions
+  // signing in.
+  if (CREDENTIAL_CHANGE_PATTERNS.some((re) => re.test(purpose))) return 'credential_change';
+  if (LOGIN_PATTERNS.some((re) => re.test(purpose))) return 'login';
   return 'unknown';
 }
 

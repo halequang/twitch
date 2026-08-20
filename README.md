@@ -761,11 +761,21 @@ That last one is why the lists are written from captured mail rather than from
 imagination — it contains no word for "change", and an earlier denylist missed it
 entirely. It only failed safe because unrecognised wording is refused.
 
+Classification runs on the mail's **purpose sentences**, with advice stripped first.
+This matters more than it sounds: Steam's login mail ends with "如果这不是您尝试登录,
+建议您重置自己的 Steam 密码" — *if this wasn't you, reset your password* — so matching
+the whole body refused every genuine login code. The change mail mirrors it from the
+other side ("If you are not trying to change..."), so the advice describes the
+opposite of the intent about as often as it describes it.
+
 The login patterns are deliberately narrow, anchored on phrases that only make sense
 for a sign-in. A loose one is the single mistake that matters: it would pass a
 credential-change mail in a language whose denylist entry is still missing. A login
 mail in an unhandled language is refused and logged as `refused_purpose` — that is the
 signal to add its wording.
+
+Test against **complete** bodies. The abridged Chinese sample passed while the real
+mail was refused, because the footer is where the trouble was.
 
 Other guards:
 
