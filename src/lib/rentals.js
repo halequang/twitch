@@ -15,6 +15,7 @@
  */
 
 import { DEFAULT_GAME, GAMES, findPlan, purchasePlan } from '../data/rental-plans.js';
+import { hasGuardFlag } from './steamcode.js';
 import {
   createPaymentLink,
   embeddedCheckoutAvailable,
@@ -652,7 +653,8 @@ export async function listOrders(env, user) {
     if (order.status === 'active' && order.account_id != null) {
       const account = await db
         .prepare(
-          `SELECT login, password_enc, note, email, email_password_enc FROM steam_accounts WHERE id = ?`
+          `SELECT login, password_enc, note, internal_note, email, email_password_enc
+             FROM steam_accounts WHERE id = ?`
         )
         .bind(order.account_id)
         .first();
@@ -663,6 +665,10 @@ export async function listOrders(env, user) {
             password: await decryptSecret(account.password_enc, env.ACCOUNT_ENC_KEY),
             note: account.note ?? null,
           };
+          // A boolean, never the note text: internal_note is shop bookkeeping and
+          // holds things like red_flag and prices. This only says whether the page
+          // should offer the "get my Guard code" button.
+          entry.guardCode = hasGuardFlag(account.note, account.internal_note);
           // The mailbox is withheld from renters by default: whoever holds it can
           // reset the Steam password and keep the account for good. For a BUYER
           // that is precisely the point — and it is what makes buying fix the

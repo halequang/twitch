@@ -769,6 +769,12 @@ signal to add its wording.
 
 Other guards:
 
+- **Only accounts marked `guard`.** The button appears, and the endpoint answers, only
+  when the word `guard` is a tag in the account's `internal_note` (or `note`). Most
+  accounts never ask for an emailed code, and offering it there promises a code that
+  never arrives. The note fields hold space-separated tags (`day 2`, `red_flag`,
+  `80k 1 tuan`), so the match is word-boundary — `guardian` does not qualify. The page
+  receives a **boolean**, never the note text: `internal_note` is shop bookkeeping.
 - **Own live rental only.** A rental that has lapsed gets nothing: its password is
   about to be rotated, so a code then is a code into somebody else's account. An
   order that is not yours 404s exactly like one that does not exist.

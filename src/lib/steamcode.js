@@ -96,6 +96,22 @@ export function classifyCode(body) {
   return 'unknown';
 }
 
+/**
+ * Whether this account is marked as using email Steam Guard.
+ *
+ * Most accounts do not ask for a code at all, and offering the button on those
+ * invites confused renters to request codes that will never arrive. The marker is
+ * the word "guard" in either note field — internal_note in practice, which is where
+ * the existing one lives and where it belongs, since `note` is printed to the renter.
+ *
+ * Word-boundary matched because these fields hold space-separated tags
+ * ("day 2", "red_flag", "80k 1 tuan"), so "guard" is one token among others and a
+ * substring test would also fire on something like "guardian".
+ */
+export function hasGuardFlag(note, internalNote) {
+  return /(^|\s)guard(\s|$)/i.test(`${note ?? ''} ${internalNote ?? ''}`.trim());
+}
+
 export function mailboxReadable(email) {
   const domain = String(email ?? '').trim().toLowerCase().split('@').pop();
   return READABLE_MAIL_DOMAINS.includes(domain);
@@ -160,7 +176,7 @@ export async function requestSteamCode(env, user, orderCode) {
   const order = await db
     .prepare(
       `SELECT o.order_code, o.user_key, o.user_email, o.status, o.expires_at,
-              a.id AS account_id, a.login, a.email
+              a.id AS account_id, a.login, a.email, a.note, a.internal_note
          FROM orders o
          LEFT JOIN steam_accounts a ON a.id = o.account_id
         WHERE o.order_code = ?`
@@ -205,6 +221,14 @@ export async function requestSteamCode(env, user, orderCode) {
   if (Number(recent?.total ?? 0) >= CODE_MAX_PER_RENTAL) {
     await logRequest(db, { ...audit, outcome: 'rate_limited' });
     return { status: 429, body: { error: 'limit_reached', limit: CODE_MAX_PER_RENTAL } };
+  }
+
+  // Checked here and not only in the page: the button is a hint, this is the rule.
+  // Reading a mailbox is the sensitive act, so it does not happen for an account
+  // nobody marked as needing it.
+  if (!hasGuardFlag(order.note, order.internal_note)) {
+    await logRequest(db, { ...audit, outcome: 'not_guard_account' });
+    return { status: 409, body: { error: 'not_guard_account' } };
   }
 
   if (!mailboxReadable(order.email)) {

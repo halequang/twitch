@@ -257,6 +257,14 @@ const rentalGame = GAMES[DEFAULT_GAME];
                 <span class="plan-exact">{formatVnd(plan.amount)}</span>
               </p>
               <p class="plan-note">{plan.note}</p>
+              {plan.perks && (
+                <div class="plan-perks">
+                  <p class="perks-title">★ Đặc quyền gói tuần</p>
+                  <div class="perks-row">
+                    {plan.perks.map((perk) => <span class="perk">{perk}</span>)}
+                  </div>
+                </div>
+              )}
               <button type="button" class="btn rent-btn" data-plan={plan.id}>Thuê ngay</button>
             </div>
           ))
@@ -1370,6 +1378,40 @@ const rentalGame = GAMES[DEFAULT_GAME];
     color: var(--isle-green);
   }
 
+  /* Only the full-perks plan renders this, so it doubles as the visible reason
+     one week costs more than another. */
+  .plan-perks {
+    margin: 0 0 16px;
+    padding: 10px 12px;
+    background: rgba(232, 200, 119, 0.07);
+    border: 1px solid var(--isle-line);
+    border-radius: 4px;
+  }
+
+  .perks-title {
+    margin: 0 0 8px;
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--isle-gold);
+  }
+
+  .perks-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .perk {
+    padding: 4px 12px;
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    color: var(--isle-cream);
+    border: 1px solid var(--isle-gold);
+    border-radius: 999px;
+  }
+
   .plan-note {
     font-size: 12px;
     line-height: 1.5;
@@ -2073,7 +2115,9 @@ const rentalGame = GAMES[DEFAULT_GAME];
         'Đăng nhập Steam, bật chế độ offline nếu được yêu cầu. Vui lòng không đổi mật khẩu.';
       box.appendChild(note);
       box.appendChild(extendControls(order));
-      box.appendChild(steamCodeControls(order));
+      // Only accounts marked as using email Steam Guard. On the rest the button
+      // would promise a code that never arrives.
+      if (order.guardCode) box.appendChild(steamCodeControls(order));
       box.appendChild(reportControls(order));
     } else if (order.status === 'pending' && order.checkoutUrl) {
       // Resume an unfinished order in the same embedded form, not by navigating
@@ -2191,7 +2235,9 @@ const rentalGame = GAMES[DEFAULT_GAME];
                 ? `Vui lòng đợi ${data.retryAfter}s rồi thử lại.`
                 : data.error === 'limit_reached'
                   ? 'Đã lấy mã quá nhiều lần cho đơn này. Vui lòng liên hệ shop.'
-                  : data.error === 'mailbox_not_readable'
+                  : data.error === 'not_guard_account'
+              ? 'Tài khoản này không dùng mã xác nhận qua email. Bạn đăng nhập trực tiếp bằng tài khoản và mật khẩu ở trên.'
+            : data.error === 'mailbox_not_readable'
                     ? 'Tài khoản này không hỗ trợ tự lấy mã. Vui lòng liên hệ shop.'
                     : data.error === 'code_service_unconfigured'
                       ? 'Chức năng lấy mã chưa được bật. Vui lòng liên hệ shop.'
