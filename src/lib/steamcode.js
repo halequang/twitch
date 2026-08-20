@@ -189,17 +189,37 @@ export async function requestSteamCode(env, user, orderCode) {
 
   // Only while the rental is live. A lapsed rental means the password is about to be
   // rotated, and a code then would be a code into somebody else's account.
-  if (order.status !== 'active' || (order.expires_at ?? 0) <= now()) {
-    return { status: 409, body: { error: 'rental_not_active', status: order.status } };
-  }
-  if (order.account_id == null) return { status: 409, body: { error: 'no_account_yet' } };
-
+  //
+  // Reported as three distinct cases. Collapsing them produced
+  // {"error":"rental_not_active","status":"active"} — a contradiction that sends
+  // whoever reads it looking at the wrong thing, when the actual fault was a row
+  // with no expiry at all.
   const audit = {
     orderCode: code,
     accountId: order.account_id,
     userKey: key,
     userEmail: order.user_email ?? null,
   };
+
+  if (order.status !== 'active') {
+    await logRequest(db, { ...audit, outcome: 'rental_not_active' });
+    return { status: 409, body: { error: 'rental_not_active', status: order.status } };
+  }
+  if (order.expires_at == null) {
+    // Not the renter's problem: an active rental with no end date never went
+    // through fulfilOrder, which always stamps one. Logged because it is a data
+    // fault somebody has to fix, and an unlogged one is a fault nobody sees.
+    await logRequest(db, { ...audit, outcome: 'rental_has_no_expiry' });
+    return { status: 409, body: { error: 'rental_has_no_expiry' } };
+  }
+  if (order.expires_at <= now()) {
+    await logRequest(db, { ...audit, outcome: 'rental_expired' });
+    return { status: 409, body: { error: 'rental_expired', expiresAt: order.expires_at } };
+  }
+  if (order.account_id == null) {
+    await logRequest(db, { ...audit, outcome: 'no_account_yet' });
+    return { status: 409, body: { error: 'no_account_yet' } };
+  }
 
   const recent = await db
     .prepare(
