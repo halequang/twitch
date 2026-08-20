@@ -61,6 +61,9 @@ each one's columns and tables were genuinely present in production. If you ever 
 a migration by hand again, insert its filename into `d1_migrations` too, or the next
 deploy will try to re-run it and fail on a duplicate column.
 
+After deploy, the Worker is live at the routes configured in `wrangler.toml`
+(`fungamingvn.shop/*` and `www.fungamingvn.shop/*`).
+
 ## Structure
 
 ```
