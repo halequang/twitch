@@ -721,7 +721,19 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
       ? null
       : Number(body.accountId);
     if (wantAccount !== null && !Number.isFinite(wantAccount)) return bad('bad_account', 400);
-    if (wantStatus === null && wantAccount === null) return bad('nothing_to_do', 400);
+
+    // Extra time on a rental that is ALREADY running. Distinct from `hours`, which
+    // only sets the length of a fresh activation — there was previously no way to
+    // give a live rental more time from here at all.
+    let wantAddHours = null;
+    if (body?.addHours !== undefined && body.addHours !== null && body.addHours !== '') {
+      wantAddHours = Number(body.addHours);
+      if (!Number.isFinite(wantAddHours) || wantAddHours <= 0) return bad('bad_add_hours', 400);
+      wantAddHours = Math.min(Math.floor(wantAddHours), 24 * 90);
+    }
+    if (wantStatus === null && wantAccount === null && wantAddHours === null) {
+      return bad('nothing_to_do', 400);
+    }
 
     const ts = now();
     const statements = [];
@@ -775,6 +787,28 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
     }
 
     const finalAccount = wantAccount !== null ? wantAccount : order.account_id;
+
+    if (wantAddHours !== null) {
+      // Only a live rental has a clock to extend. Reactivating a lapsed one is the
+      // `hours` field's job, and mixing both in one save would be ambiguous about
+      // which won.
+      if (order.status !== 'active' || (wantStatus !== null && wantStatus !== 'active')) {
+        return bad('not_active', 409, { status: order.status, hint: 'activate it first, then add hours' });
+      }
+      // A purchase is stored with expires_at NULL precisely because it never ends.
+      // Adding hours would give it an expiry and quietly take ownership away.
+      if (order.expires_at == null) {
+        return bad('no_expiry', 409, { hint: 'this order never expires (a purchase) — nothing to extend' });
+      }
+      // Extend from now if it already lapsed, so the customer gets the full time
+      // rather than hours that were already spent.
+      const base = order.expires_at > ts ? order.expires_at : ts;
+      statements.push(
+        env.DB.prepare(
+          `UPDATE orders SET expires_at = ?, reminder_sent_at = NULL WHERE order_code = ?`
+        ).bind(base + wantAddHours * 3600, code)
+      );
+    }
 
     if (wantStatus !== null && wantStatus !== order.status) {
       if (wantStatus === 'active') {

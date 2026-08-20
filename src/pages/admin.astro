@@ -692,6 +692,14 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
      red = needs a human. */
   .tbl :global(.pill.available) { background: var(--ad-green-soft); color: var(--ad-green); }
   /* Created in JS, so it needs :global() — Astro's scoping attribute is not on it. */
+  .tbl :global(.field-hint) {
+    display: block;
+    margin-top: 3px;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--ad-text-mute);
+  }
+
   .tbl :global(.reserved-for) {
     margin-top: 2px;
     font-size: 11.5px;
@@ -1082,6 +1090,27 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     hours.value = String(order.hours || 24);
     hoursLabel.appendChild(hours);
 
+    // Extending a running rental is a different operation from setting the length
+    // of a reactivation, so it gets its own field rather than overloading the one
+    // above — which the server only reads when an order becomes active.
+    const canExtend = order.status === 'active' && order.expiresAt != null;
+    const addLabel = document.createElement('label');
+    addLabel.textContent = 'Cộng thêm giờ';
+    const addHours = document.createElement('input');
+    addHours.type = 'number';
+    addHours.min = '1';
+    addHours.placeholder = canExtend ? 'vd 24 — cộng vào hạn hiện tại' : '—';
+    addHours.disabled = !canExtend;
+    addLabel.appendChild(addHours);
+    if (!canExtend) {
+      const why = document.createElement('span');
+      why.className = 'field-hint';
+      why.textContent = order.expiresAt == null && order.status === 'active'
+        ? 'Đơn mua — không có thời hạn để cộng.'
+        : 'Chỉ cộng được cho đơn đang thuê.';
+      addLabel.appendChild(why);
+    }
+
     const save = document.createElement('button');
     save.type = 'button';
     save.className = 'primary';
@@ -1098,7 +1127,12 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       const payload = { hours: Number(hours.value) || order.hours };
       if (status.value !== order.status) payload.status = status.value;
       if (account.value) payload.accountId = Number(account.value);
-      if (payload.status === undefined && payload.accountId === undefined) {
+      const extra = Number(addHours.value);
+      if (extra > 0) payload.addHours = extra;
+      // `hours` rides along on every save but only takes effect on a
+      // reactivation, so it must not count as a change on its own — otherwise
+      // every "Lưu" would look like an edit. addHours does count.
+      if (payload.status === undefined && payload.accountId === undefined && payload.addHours === undefined) {
         notice('Chưa có gì thay đổi.', true);
         save.disabled = false;
         return;
