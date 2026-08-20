@@ -31,6 +31,7 @@ import { isMerchantConfigError, verifyWebhook } from "../src/lib/payos.js";
 import { ADMIN_PREFIX, handleAdminRequest } from "../src/lib/admin.js";
 import { notifyExpiredRentals } from "../src/lib/notify.js";
 import { submitReport, listOwnReports } from "../src/lib/reports.js";
+import { requestSteamCode } from "../src/lib/steamcode.js";
 
 const ROUTES = {
   "/":          "/index.html",
@@ -218,6 +219,24 @@ async function handleRent(request, env, url, path) {
     const user = await requireUser(request, env);
     if (!user) return json({ error: "unauthorized" }, 401);
     return json({ orders: await listOrders(env, user), reports: await listOwnReports(env, user) });
+  }
+
+  // Hands the renter their own Steam Guard code. Guarded hard in steamcode.js:
+  // Steam sends the same-looking email for signing in and for changing credentials,
+  // and only the latter is a takeover.
+  if (path === "/api/rent/steam-code") {
+    if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+    const user = await requireUser(request, env);
+    if (!user) return json({ error: "unauthorized" }, 401);
+
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "invalid_json" }, 400);
+    }
+    const { status, body: out } = await requestSteamCode(env, user, body?.orderCode);
+    return json(out, status);
   }
 
   // A renter reporting a problem with the account they hold — most importantly

@@ -732,6 +732,45 @@ Behaviour worth knowing:
   reset to whatever day the server actually reported on, so it cannot drift from the
   numbers beside it.
 
+## Letting a renter fetch their own Steam Guard code
+
+`POST /api/rent/steam-code` with `{orderCode}`, behind the **🔑 Lấy mã Steam Guard**
+button on a live rental. Removes the shop from the loop on its most common ticket.
+
+**Read this before enabling it.** Steam emails a code for signing in *and* for
+changing login credentials, from the same sender with the same subject
+("Steam Account Verification"). Only the body differs. Handing over the wrong one is
+not a leak, it is an account transfer — the holder changes the password and keeps the
+account. And the mailboxes in this shop mostly contain credential-change codes,
+because `steam_change_password.py` generates them during rotation. "Return the newest
+code" would therefore often return exactly the wrong one.
+
+So `classifyCode` in `src/lib/steamcode.js` uses a positive allowlist for login
+wording, a denylist for credential-change wording, and **refuses anything it does not
+recognise**. Fail closed: a refused renter is a support ticket, a served
+credential-change code is a stolen account. The denylist is tested against the real
+email body pulled from this shop's own mailbox; the login half is Steam's documented
+wording and is not yet confirmed against a captured sample — if it is wrong the
+result is a refusal, logged as `refused_purpose`.
+
+Other guards:
+
+- **Own live rental only.** A rental that has lapsed gets nothing: its password is
+  about to be rotated, so a code then is a code into somebody else's account. An
+  order that is not yours 404s exactly like one that does not exist.
+- **One code per minute, ten per rental.** A renter needs a code once or twice;
+  a hundred requests is somebody working on the account.
+- **Every attempt is logged** to `steam_code_requests` (migration `0012`), including
+  refusals — a renter repeatedly hitting a refusal is the pattern worth seeing. The
+  code itself is deliberately not stored.
+- **The mailbox address is never returned**, only the code.
+- Only outlook/hotmail mailboxes can be read at all, so most of the pool answers
+  `mailbox_not_readable` and falls back to asking the shop.
+
+Needs `MAIL_API_KEY` as a Worker secret (`wrangler secret put MAIL_API_KEY`) — it is
+currently only in `.dev.vars`, so in production this reports
+`code_service_unconfigured` until that is set.
+
 ## Renter problem reports
 
 A renter can report a problem with the account they are holding — most importantly
