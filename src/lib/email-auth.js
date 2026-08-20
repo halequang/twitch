@@ -276,6 +276,61 @@ export async function touchLogin(db, id) {
 }
 
 /** The shape src/lib/auth.js puts in the session cookie. */
+/**
+ * Placeholder password for a row created by a provider sign-in.
+ *
+ * Safe by construction, not convention: verifyPassword() requires exactly
+ * `pbkdf2$sha256$<iterations>$<salt>$<hash>` and bails on the format before
+ * comparing anything, so a value with no '$' cannot authenticate whatever is typed.
+ * Asserted in the tests, because that is the whole security argument.
+ */
+export const OAUTH_ONLY_PASSWORD = 'oauth-only';
+
+/**
+ * Records a successful Google / Apple sign-in in `users`.
+ *
+ * Keyed on the email, so a customer who signs in with Google and later sets a
+ * password is one account rather than two — orders are attributed by user_email, and
+ * splitting the identity would split their rental history.
+ *
+ * Never overwrites an existing password_hash: someone who already has a password
+ * keeps it after signing in with Google.
+ *
+ * Returns the row id, or null when there is nothing to record (no database bound, or
+ * a provider that gave us no email — Apple private relay can withhold it, and the
+ * email column is the key here).
+ */
+export async function recordOauthLogin(db, { provider, sub, email, name, picture }) {
+  if (!db || !email) return null;
+  // normaliseEmail returns {email, lower} — and null for anything malformed, which
+  // doubles as validation: a provider address we cannot parse is not stored.
+  const parsed = normaliseEmail(email);
+  if (!parsed) return null;
+  const ts = Math.floor(Date.now() / 1000);
+
+  const row = await db
+    .prepare(
+      `INSERT INTO users
+         (email, email_lower, password_hash, name, picture, provider, provider_sub,
+          created_at, last_login_at, login_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+       ON CONFLICT (email_lower) DO UPDATE SET
+         last_login_at = excluded.last_login_at,
+         login_count   = users.login_count + 1,
+         provider      = excluded.provider,
+         provider_sub  = excluded.provider_sub,
+         -- Only fill these in; a name the customer set themselves should not be
+         -- replaced by whatever the provider currently returns.
+         name          = COALESCE(users.name, excluded.name),
+         picture       = COALESCE(excluded.picture, users.picture)
+       RETURNING id`
+    )
+    .bind(parsed.email, parsed.lower, OAUTH_ONLY_PASSWORD, name ?? null, picture ?? null,
+          provider, sub ?? null, ts, ts)
+    .first();
+  return row?.id ?? null;
+}
+
 export function sessionUser(row) {
   return {
     provider: 'email',

@@ -665,6 +665,32 @@ Behaviour worth knowing:
 - Scoped like everything else. An order holding one of your accounts is yours to
   fix; an unassigned one is only yours if the account you assign is.
 
+## Customer records
+
+A successful Google or Apple sign-in is recorded in `users` — the same table the
+email+password accounts use, not a second one. `recordOauthLogin` in
+`src/lib/email-auth.js`, called from `handleAuthRequest`.
+
+- **Keyed on email, so one person is one row.** A customer who signs in with Google
+  and later sets a password is a single account. Orders are attributed by
+  `user_email`, so a split identity would split their rental history.
+- **An existing password is never touched.** Signing in with Google leaves a
+  password-holder's hash alone, and that password still works afterwards.
+- **A provider row stores `password_hash = 'oauth-only'`**, which cannot
+  authenticate: `verifyPassword` requires exactly `pbkdf2$sha256$<iter>$<salt>$<hash>`
+  and rejects anything else on the format, before comparing. This is asserted in the
+  tests, because it is the whole reason the column could stay `NOT NULL` instead of
+  rebuilding a live table.
+- **A name the customer set is not overwritten** by whatever the provider currently
+  returns, and a null picture does not erase a stored one.
+- **Apple can withhold the email** (private relay). Those sign-ins are skipped rather
+  than crashing — the email is the key here.
+- **A failed write never costs someone their login.** The token is already verified
+  at that point, so the error is logged and the session is still issued.
+- `login_count` and `last_login_at` are maintained, and migration `0011` backfills
+  existing rows as `provider = 'email'` with a count of 1 rather than leaving every
+  current customer looking like they had never signed in.
+
 ## Daily report
 
 `GET /api/admin/report[?date=YYYY-MM-DD]`, shown as the **📊 Báo cáo ngày** card at

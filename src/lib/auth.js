@@ -37,6 +37,7 @@ import {
   sessionUser,
   signClaim,
   storeCode,
+  recordOauthLogin,
   touchLogin,
   verifyPassword,
 } from './email-auth.js';
@@ -332,6 +333,17 @@ export async function handleAuthRequest({ path, method, body, cookie, secure, en
         'Exile',
       picture: claims.picture ?? null, // Apple never provides one
     };
+    // Record the sign-in, but never let bookkeeping cost someone their login: the
+    // token is already verified, so a failed write is our problem, not theirs. It is
+    // logged rather than swallowed so a broken table cannot go unnoticed.
+    if (env?.DB) {
+      try {
+        await recordOauthLogin(env.DB, user);
+      } catch (err) {
+        console.error('could not record login:', err?.message || err);
+      }
+    }
+
     return {
       status: 200,
       body: { user },
