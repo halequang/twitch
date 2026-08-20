@@ -114,7 +114,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     </section>
 
 
-    <h2 class="head spaced">Kho tài khoản</h2>
+    <h2 class="head spaced" id="accountsSection">Kho tài khoản</h2>
 
     <form id="addForm" class="card form">
       <p class="form-title">Thêm tài khoản</p>
@@ -159,7 +159,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       </table>
     </div>
 
-    <h2 class="head spaced">Đơn hàng</h2>
+    <h2 class="head spaced" id="ordersSection">Đơn hàng</h2>
     <div class="listbar">
       <input type="search" id="ordersQ" class="listbar-q"
              placeholder="Tìm theo mã đơn, email khách hoặc tên tài khoản…" />
@@ -182,6 +182,21 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
         <tbody id="ordersBody"></tbody>
       </table>
     </div>
+
+    <!-- Floating section jump. The panel is long enough that Kho tài khoản and Đơn
+         hàng are several screens apart, and both are edited in the same sitting. -->
+    <nav id="quickNav" class="quicknav" aria-label="Chuyển nhanh">
+      <button type="button" id="qnToggle" class="qn-toggle" aria-expanded="true"
+              title="Thu gọn / mở rộng">⚡</button>
+      <div id="qnLinks" class="qn-links">
+        <a href="#reportWrap" data-jump="reportWrap">📊 Báo cáo</a>
+        <a href="#reportsWrap" data-jump="reportsWrap">🚨 Báo lỗi</a>
+        <a href="#expiringWrap" data-jump="expiringWrap">⏳ Sắp hết hạn</a>
+        <a href="#accountsSection" data-jump="accountsSection">🗄️ Tài khoản</a>
+        <a href="#ordersSection" data-jump="ordersSection">🧾 Đơn hàng</a>
+        <a href="#ownerOnly" data-jump="ownerOnly">👥 Nhóm</a>
+      </div>
+    </nav>
 
     <section id="ownerOnly" hidden>
       <h2 class="head">Nhóm tài khoản</h2>
@@ -692,6 +707,81 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
      red = needs a human. */
   .tbl :global(.pill.available) { background: var(--ad-green-soft); color: var(--ad-green); }
   /* Created in JS, so it needs :global() — Astro's scoping attribute is not on it. */
+  /* ─── Floating section jump ─────────────────── */
+
+  .quicknav {
+    position: fixed;
+    /* Sits above the global #toTop button (Layout.astro: right/bottom 24px, 44px
+       tall, z-index 50) instead of underneath it — right edges aligned so the two
+       read as one stack. */
+    right: 24px;
+    bottom: 80px;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+  }
+
+  .qn-toggle {
+    width: 40px;
+    height: 40px;
+    font-size: 17px;
+    line-height: 1;
+    color: var(--ad-accent);
+    background: var(--ad-card);
+    border: 1px solid var(--ad-line);
+    border-radius: 50%;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.16);
+    cursor: pointer;
+  }
+
+  .qn-toggle:hover { border-color: var(--ad-accent); }
+
+  .qn-links {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    padding: 6px;
+    background: var(--ad-card);
+    border: 1px solid var(--ad-line);
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(15, 23, 42, 0.14);
+  }
+
+  .qn-links[hidden] { display: none; }
+
+  .qn-links a,
+  .qn-links button {
+    padding: 7px 12px;
+    font: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    white-space: nowrap;
+    color: var(--ad-text);
+    background: none;
+    border: 0;
+    border-radius: 5px;
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .qn-links a:hover,
+  .qn-links button:hover {
+    background: var(--ad-accent-soft);
+    color: var(--ad-accent);
+  }
+
+  .qn-links a[hidden] { display: none; }
+
+  /* The dock would cover the pager controls on a phone, where the page is one
+     column and every row is already full width. */
+  @media (max-width: 640px) {
+    .quicknav { right: 16px; bottom: 74px; }
+    .qn-links a, .qn-links button { padding: 9px 12px; }
+  }
+
   .tbl :global(.field-hint) {
     display: block;
     margin-top: 3px;
@@ -1972,4 +2062,68 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     el('adminPanel').hidden = false;
     loadAll();
   })();
+
+  /* ─── Floating section jump ─────────────────── */
+
+  {
+    const nav = el('quickNav');
+    const links = el('qnLinks');
+    const toggle = el('qnToggle');
+
+    // Several sections are hidden until their data arrives, or for a manager who
+    // is not the owner. A jump to something invisible is worse than no jump, so
+    // each entry mirrors its target's visibility.
+    const entries = [...links.querySelectorAll('a[data-jump]')];
+    const syncVisibility = () => {
+      let shown = 0;
+      for (const a of entries) {
+        const target = el(a.dataset.jump);
+        const visible = Boolean(target) && !target.hidden && target.offsetParent !== null;
+        a.hidden = !visible;
+        if (visible) shown++;
+      }
+      // Nothing to jump to yet — do not float an empty box over the page.
+      nav.hidden = shown === 0;
+    };
+
+    // Those sections are unhidden by their own loaders, so watch rather than
+    // sampling once at startup and getting it permanently wrong.
+    const observer = new MutationObserver(syncVisibility);
+    for (const a of entries) {
+      const target = el(a.dataset.jump);
+      if (target) observer.observe(target, { attributes: true, attributeFilter: ['hidden'] });
+    }
+    syncVisibility();
+
+    const collapse = (collapsed) => {
+      links.hidden = collapsed;
+      toggle.setAttribute('aria-expanded', String(!collapsed));
+      try {
+        localStorage.setItem('fgQuickNav', collapsed ? 'closed' : 'open');
+      } catch {
+        /* private mode — the preference just does not persist */
+      }
+    };
+    let startClosed = false;
+    try {
+      startClosed = localStorage.getItem('fgQuickNav') === 'closed';
+    } catch {
+      /* ignore */
+    }
+    collapse(startClosed);
+    toggle.addEventListener('click', () => collapse(!links.hidden));
+
+    for (const a of entries) {
+      a.addEventListener('click', (e) => {
+        const target = el(a.dataset.jump);
+        if (!target) return;
+        e.preventDefault();
+        // Nudge up a little so the heading is not flush against the viewport edge.
+        const top = target.getBoundingClientRect().top + window.scrollY - 14;
+        window.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' });
+      });
+    }
+
+  }
+
 </script>
