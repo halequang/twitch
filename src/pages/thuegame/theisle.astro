@@ -1132,7 +1132,16 @@ const rentalGame = GAMES[DEFAULT_GAME];
     color: var(--isle-cream);
   }
 
+  /* Now a row of [code][Chép], so the type treatment moved to the value itself —
+     left on the paragraph, the 20px and 0.18em tracking were inherited by the
+     button and blew it up. */
   .rent-orders :global(.guard-out.code) {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .rent-orders :global(.guard-code-value) {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 20px;
     letter-spacing: 0.18em;
@@ -2293,6 +2302,10 @@ const rentalGame = GAMES[DEFAULT_GAME];
       btn.disabled = true;
       out.hidden = false;
       out.classList.remove('error');
+      // 'code' too: it was only ever removed by not being added, so a second
+      // attempt kept the monospace treatment on "Đang lấy mã…" — and now it would
+      // also leave the copy button's styling behind after the button itself went.
+      out.classList.remove('code');
       out.textContent = 'Đang lấy mã…';
       try {
         const res = await fetch('/api/rent/steam-code', {
@@ -2303,11 +2316,18 @@ const rentalGame = GAMES[DEFAULT_GAME];
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.code) {
-          out.textContent = `Mã: ${data.code}`;
+          // A five-character code typed by hand is a code typed wrong, and Steam
+          // rejects it as used. Reuses the same copyButton as the credentials, so
+          // it behaves and looks identical: "Chép" → "Đã chép".
+          out.textContent = '';
+          const shown = document.createElement('span');
+          shown.className = 'guard-code-value';
+          shown.textContent = `Mã: ${data.code}`;
+          out.append(shown, copyButton(data.code));
           out.classList.add('code');
           // Re-armed after the cooldown rather than left dead: a code can arrive
           // late, or the first one can expire before it is typed in.
-          const wait = Number(data.cooldownSeconds) || 60;
+          const wait = Number(data.cooldownSeconds) || 45;
           let left = wait;
           const tick = setInterval(() => {
             left -= 1;
