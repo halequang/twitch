@@ -1283,7 +1283,9 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       }
     });
 
-    form.append(statusLabel, acctLabel, hoursLabel, save, cancel);
+    // addLabel belongs here: it was built but never appended, so the field existed
+    // in code and nowhere on screen.
+    form.append(statusLabel, acctLabel, hoursLabel, addLabel, save, cancel);
     td.appendChild(form);
     tr.appendChild(td);
     afterRow.insertAdjacentElement('afterend', tr);
