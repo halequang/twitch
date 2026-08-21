@@ -294,6 +294,39 @@ async function claimAccount(db, game, forEmail = null, planId = null) {
 
 /* ─── catalogue ───────────────────────────────── */
 
+/**
+ * When a plan is empty, when its accounts come back.
+ *
+ * A forecast, not a promise: the renter holding an account can extend, and an
+ * account can be sold or disabled before it returns. So this reports the rentals
+ * that WOULD release an eligible account, and the page says "dự kiến".
+ *
+ * Filtered by the same rules as the stock count, or the forecast would promise
+ * accounts this plan still could not be given — an account tagged for another plan,
+ * or held for another customer, is not coming back to THIS viewer.
+ */
+async function forecastForPlan(db, game, forEmail, planId, limit = 3) {
+  const rows = await db
+    .prepare(
+      `SELECT o.expires_at AS at, COUNT(*) AS n
+         FROM orders o JOIN steam_accounts a ON a.id = o.account_id
+        WHERE o.status = 'active'
+          AND o.expires_at IS NOT NULL
+          AND o.expires_at > ?
+          AND a.game = ?
+          -- 'rented' only: a sold or disabled account never returns to the pool, so
+          -- counting its rental would forecast stock that cannot arrive.
+          AND a.status = 'rented'
+          AND (a.reserved_for IS NULL OR lower(a.reserved_for) = lower(?))${tagRequireSql(planId, 'a.')}${tagBarSql(planId, 'a.')}
+        GROUP BY o.expires_at
+        ORDER BY o.expires_at
+        LIMIT ?`
+    )
+    .bind(now(), game, forEmail ?? '', limit)
+    .all();
+  return (rows?.results ?? []).map((r) => ({ at: r.at, count: r.n }));
+}
+
 export async function listPlans(env, game = DEFAULT_GAME, forEmail = null) {
   const catalogue = GAMES[game];
   if (!catalogue) return null;
@@ -309,10 +342,16 @@ export async function listPlans(env, game = DEFAULT_GAME, forEmail = null) {
   if (env?.DB) {
     await sweepExpiredRentals(env.DB);
     plans = await Promise.all(
-      catalogue.plans.map(async (p) => ({
-        ...p,
-        available: await countStock(env.DB, game, forEmail, p.id),
-      }))
+      catalogue.plans.map(async (p) => {
+        const count = await countStock(env.DB, game, forEmail, p.id);
+        return {
+          ...p,
+          available: count,
+          // Only worth the query when there is nothing to sell: a customer looking
+          // at stock does not need to know when more arrives.
+          upcoming: count === 0 ? await forecastForPlan(env.DB, game, forEmail, p.id) : [],
+        };
+      })
     );
     // The headline figure is what this viewer could rent on their best plan, so
     // "hết tài khoản" only ever means every plan is empty.

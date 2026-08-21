@@ -203,8 +203,8 @@ const rentalGame = GAMES[DEFAULT_GAME];
             <span class="done-where-icon" aria-hidden="true">📍</span>
             <p>
               Thông tin đăng nhập luôn nằm ở mục <strong>“Tài khoản đang thuê”</strong> ngay
-              trên trang này — đăng nhập lại bất cứ lúc nào để xem lại, không cần lưu vào đâu.
-              Vui lòng <strong>không đổi mật khẩu</strong> tài khoản.
+              trên trang này — đăng nhập lại bất cứ lúc nào để xem lại.
+               <strong>mật khẩu mới luôn hiển thị trang web</strong>.
             </p>
           </div>
           <button id="doneGo" type="button" class="btn done-go">Xem tài khoản của tôi</button>
@@ -257,6 +257,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
               </p>
               <p class="plan-note">{plan.note}</p>
               <p class="plan-stock" data-stock-for={plan.id}>&nbsp;</p>
+              <div class="plan-forecast" data-forecast-for={plan.id} hidden></div>
               <label class="plan-qty">
                 <span>Số lượng</span>
                 <input
@@ -1440,6 +1441,42 @@ const rentalGame = GAMES[DEFAULT_GAME];
   }
 
   /* A plan whose own stock is gone, while others may still be rentable. */
+  .plan-forecast {
+    margin: 0 0 14px;
+    padding: 9px 11px;
+    text-align: left;
+    background: rgba(127, 174, 99, 0.06);
+    border-left: 2px solid var(--isle-green);
+    border-radius: 3px;
+  }
+
+  .plan-forecast[hidden] { display: none; }
+
+  .forecast-title {
+    margin: 0 0 5px;
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--isle-green);
+  }
+
+  .forecast-row {
+    margin: 0 0 3px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--isle-cream);
+  }
+
+  .forecast-note,
+  .forecast-none {
+    margin: 6px 0 0;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--isle-green);
+  }
+
+  .forecast-none { margin: 0; }
+
   .plan-qty {
     display: flex;
     align-items: center;
@@ -2827,7 +2864,77 @@ const rentalGame = GAMES[DEFAULT_GAME];
         label.classList.toggle('none', out);
         label.classList.toggle('low', !out && left <= 2);
       }
+
+      renderForecast(plan);
     }
+  }
+
+  /**
+   * When a plan is empty, when its accounts are expected back.
+   *
+   * Worded as an expectation throughout: the renter holding an account can extend
+   * it, so a time here is not a reservation. Saying "dự kiến" and naming the reason
+   * is more use than an empty card that gives someone no reason to return.
+   */
+  /**
+   * Coarse "in about N" wording, deliberately not formatRemaining: that renders
+   * under an hour as mm:ss ("23:56"), which sitting next to a clock time reads as a
+   * time of day rather than a wait. Rounding also matches what this is — an
+   * estimate, not a countdown.
+   */
+  function forecastEta(seconds) {
+    if (seconds < 60) return 'dưới 1 phút';
+    const mins = Math.round(seconds / 60);
+    if (mins < 60) return `${mins} phút`;
+    const hours = Math.floor(mins / 60);
+    const rest = mins % 60;
+    if (hours < 24) return rest ? `${hours} giờ ${rest} phút` : `${hours} giờ`;
+    const days = Math.floor(hours / 24);
+    const spare = hours % 24;
+    return spare ? `${days} ngày ${spare} giờ` : `${days} ngày`;
+  }
+
+  function renderForecast(plan) {
+    const box = document.querySelector('.plan-forecast[data-forecast-for="' + plan.id + '"]');
+    if (!box) return;
+    const rows = Number(plan.available) === 0 ? plan.upcoming || [] : [];
+    box.textContent = '';
+    if (!rows.length) {
+      // Distinguish "nothing coming" from "not out of stock" — an empty plan with no
+      // returns due is worth saying out loud, otherwise the customer waits for
+      // nothing.
+      if (Number(plan.available) === 0) {
+        const none = document.createElement('p');
+        none.className = 'forecast-none';
+        none.textContent = 'Chưa có tài khoản nào sắp hết hạn — vui lòng liên hệ shop.';
+        box.appendChild(none);
+        box.hidden = false;
+      } else {
+        box.hidden = true;
+      }
+      return;
+    }
+
+    const title = document.createElement('p');
+    title.className = 'forecast-title';
+    title.textContent = 'Dự kiến có tài khoản trống:';
+    box.appendChild(title);
+
+    let running = 0;
+    for (const row of rows) {
+      running += Number(row.count) || 0;
+      const line = document.createElement('p');
+      line.className = 'forecast-row';
+      const left = Number(row.at) - Math.floor(Date.now() / 1000);
+      line.textContent = `+${row.count} sau ${forecastEta(Math.max(left, 0))}  ·  ${fmtWhen(row.at)}`;
+      box.appendChild(line);
+    }
+
+    const note = document.createElement('p');
+    note.className = 'forecast-note';
+    note.textContent = `Tổng ${running} tài khoản — dự kiến, khách đang thuê có thể gia hạn.`;
+    box.appendChild(note);
+    box.hidden = false;
   }
 
   async function loadStock() {
