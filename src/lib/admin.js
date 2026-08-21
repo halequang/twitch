@@ -343,9 +343,17 @@ async function updateAccount(env, actor, id, body) {
     // allocation query filters on 'available', so a sold account is never rented,
     // counted as stock, or reclaimed by an extension.
     if (!['available', 'rented', 'sold', 'disabled'].includes(status)) return bad('bad_status');
-    // Moving an account OUT of 'rented' while a rental still holds it would hand
-    // the same login to a second customer, or sell it from under the renter.
-    if (status !== 'rented' && account.status === 'rented') {
+    // Moving an account anywhere other than 'rented' while a rental still holds it
+    // would hand the same login to a second customer, or sell it from under the
+    // renter.
+    //
+    // The active order is the only authority. This used to also require
+    // `account.status === 'rented'`, which reads as a cheap short-circuit and is
+    // exactly wrong: the status is unreliable precisely when it matters. A botched
+    // UPDATE once left inasmX6543 on status '0' while a week-long rental was
+    // running, so the check was skipped, the account went back to 'available', and
+    // a second customer was sold the same login the next day.
+    if (status !== 'rented') {
       const live = await env.DB.prepare(
         `SELECT order_code FROM orders WHERE account_id = ? AND status = 'active'`
       )
