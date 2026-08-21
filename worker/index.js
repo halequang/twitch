@@ -26,12 +26,11 @@
 
 import { generateAdvice } from "../src/lib/advisor.js";
 import { AUTH_PATHS, handleAuthRequest, readSession } from "../src/lib/auth.js";
-import { createCheckout, fulfilOrder, listOrders, listPlans, rentalsConfigured, stockByGame } from "../src/lib/rentals.js";
-import { isMerchantConfigError, verifyWebhook } from "../src/lib/payos.js";
+import { fulfilOrder, rentalsConfigured, stockByGame } from "../src/lib/rentals.js";
+import { handleRentRequest } from "../src/lib/rent-routes.js";
+import { verifyWebhook } from "../src/lib/payos.js";
 import { ADMIN_PREFIX, handleAdminRequest } from "../src/lib/admin.js";
 import { notifyExpiredRentals } from "../src/lib/notify.js";
-import { submitReport, listOwnReports } from "../src/lib/reports.js";
-import { requestSteamCode } from "../src/lib/steamcode.js";
 
 const ROUTES = {
   "/":          "/index.html",
@@ -158,110 +157,29 @@ async function requireUser(request, env) {
 }
 
 async function handleRent(request, env, url, path) {
-  if (!rentalsConfigured(env)) {
-    return json({ error: "rentals_not_configured" }, 503);
-  }
-
-  if (path === "/api/rent/plans") {
-    if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
-    // The stock figure is per-viewer: an account reserved for another customer is
-    // free but not available to whoever is reading the page. Signed out, this is
-    // simply the unreserved count.
-    const viewer = await requireUser(request, env);
-    const catalogue = await listPlans(env, undefined, viewer?.email ?? null);
-    return json(catalogue ?? { error: "unknown_game" }, catalogue ? 200 : 404);
-  }
-
-  if (path === "/api/rent/checkout") {
-    if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-    const user = await requireUser(request, env);
-    if (!user) return json({ error: "unauthorized" }, 401);
-
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return json({ error: "invalid_json" }, 400);
-    }
-
-    try {
-      const { status, body: out } = await createCheckout(env, {
-        user,
-        gameId: body?.game,
-        planId: body?.planId,
-        origin: url.origin,
-        // Present => top up the rental with this order code instead of renting
-        // a new account. Ownership is verified server-side.
-        extendOrderCode: body?.extendOrderCode,
-        buyOrderCode: body?.buyOrderCode,
-      });
-      return json(out, status);
-    } catch (err) {
-      // Surface it in `wrangler tail` — the shop owner needs payOS's actual
-      // complaint, not a generic failure.
-      console.error("checkout failed:", err?.message || err);
-      return json(
-        {
-          error: "checkout_failed",
-          // A shop-side misconfiguration is not something the customer can act
-          // on, so the page shows an apology instead of payOS's merchant text.
-          merchantConfig: isMerchantConfigError(err),
-          payosCode: err?.payosCode ?? null,
-          reason: String(err.message || err),
-        },
-        502
-      );
+  // The routes themselves live in src/lib/rent-routes.js so the Astro dev server
+  // can serve exactly the same ones; this is only the HTTP adapter.
+  let body = null;
+  if (request.method === "POST") {
+    const raw = await request.text();
+    if (raw) {
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        return json({ error: "invalid_json" }, 400);
+      }
     }
   }
 
-  if (path === "/api/rent/orders") {
-    if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
-    const user = await requireUser(request, env);
-    if (!user) return json({ error: "unauthorized" }, 401);
-    return json({ orders: await listOrders(env, user), reports: await listOwnReports(env, user) });
-  }
-
-  // Hands the renter their own Steam Guard code. Guarded hard in steamcode.js:
-  // Steam sends the same-looking email for signing in and for changing credentials,
-  // and only the latter is a takeover.
-  if (path === "/api/rent/steam-code") {
-    if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-    const user = await requireUser(request, env);
-    if (!user) return json({ error: "unauthorized" }, 401);
-
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return json({ error: "invalid_json" }, 400);
-    }
-    const { status, body: out } = await requestSteamCode(env, user, body?.orderCode);
-    return json(out, status);
-  }
-
-  // A renter reporting a problem with the account they hold — most importantly
-  // "someone else is logged in", which means the password is out.
-  if (path === "/api/rent/report") {
-    if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-    const user = await requireUser(request, env);
-    if (!user) return json({ error: "unauthorized" }, 401);
-
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return json({ error: "invalid_json" }, 400);
-    }
-
-    const { status, body: out } = await submitReport(env, user, {
-      orderCode: body?.orderCode,
-      reason: body?.reason,
-      message: body?.message,
-    });
-    return json(out, status);
-  }
-
-  return json({ error: "not_found" }, 404);
+  const { status, body: out } = await handleRentRequest({
+    path,
+    method: request.method,
+    body,
+    cookie: request.headers.get("cookie"),
+    origin: url.origin,
+    env,
+  });
+  return json(out, status);
 }
 
 

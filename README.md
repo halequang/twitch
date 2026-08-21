@@ -235,7 +235,8 @@ POST /api/auth/login     {email, password}  → sets the session
 
 Needs `RESEND_API_KEY` + `RESEND_FROM` (see the reminder section below) and D1.
 
-`npm run dev` **does** support this now: the dev server opens the same sqlite file
+`npm run dev` **does** support this now, and so do the rental endpoints: the dev
+server opens the same sqlite file
 `wrangler dev --local` uses and exposes the slice of the D1 API the shared lib
 calls, so sign-up works without a build cycle. It picks the database by scoring
 candidates against this schema, because more than one miniflare file can carry a
@@ -271,6 +272,29 @@ Behaviour worth knowing:
 **Not built yet:** password reset. Someone who forgets theirs currently needs you
 to intervene. The pieces are all here (`email_codes` already carries a `purpose`
 column) but the flow is not wired.
+
+## What `npm run dev` can serve
+
+The Astro dev server answers `/api/auth/*` and `/api/rent/*` itself, against the
+same local D1 file `wrangler dev --local` uses — so sign-up, the plan list, orders
+and reports all work without a build cycle.
+
+The rent routes come from `src/lib/rent-routes.js`, the module the Worker also
+calls, rather than being restated in `astro.config.mjs`. That list has gained
+routes twice; a copy in each place drifts, and the failure mode is a route that
+works in production and 404s in dev, or the reverse.
+
+Two dev-only behaviours:
+
+- **Checkout is refused by default** with `dev_checkout_would_hit_real_payos`.
+  `.dev.vars` holds live merchant keys, so a click on "Thuê ngay" here would create
+  a genuine payment request in the production payOS dashboard. Set `PAYOS_BASE_URL`
+  to a stub, or `DEV_REAL_PAYOS=1` to mean it.
+- **The webhook answers 503 with a reason**, since payOS cannot reach localhost —
+  better than the HTML 404 page arriving where the caller expects JSON.
+
+Still Worker-only: `/api/admin/*`, the asset routes, and the cron handler. For
+those, `npm run build && npx wrangler dev --local`.
 
 ## Reaching the database
 

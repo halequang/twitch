@@ -2,6 +2,7 @@ import { defineConfig } from 'astro/config';
 import { readFileSync, readdirSync } from 'node:fs';
 import { generateAdvice } from './src/lib/advisor.js';
 import { AUTH_PATHS, handleAuthRequest } from './src/lib/auth.js';
+import { handleRentRequest } from './src/lib/rent-routes.js';
 
 // Parse .dev.vars (wrangler's local-secrets file, KEY=value) so `npm run dev`
 // can reach Gemini with the same key used by `wrangler dev`.
@@ -221,23 +222,92 @@ const authDevMiddleware = {
   },
 };
 
-// The rental endpoints need a D1 binding, which only the Worker runtime has.
-// Answer them explicitly so `npm run dev` shows a clear reason rather than the
-// HTML 404 page arriving where the page expects JSON.
+// Serves /api/rent/* in the Astro dev server. The routes themselves come from
+// src/lib/rent-routes.js, the same module the Worker uses, so a route added in one
+// place cannot work in production while 404-ing in dev.
 const rentalDevMiddleware = {
-  name: 'rentals-dev-stub',
+  name: 'rentals-dev-api',
   configureServer(server) {
     server.middlewares.use((req, res, next) => {
       const path = (req.url || '').split('?')[0].replace(/\/+$/, '') || '/';
-      if (!path.startsWith('/api/rent/') && path !== '/api/payos/webhook') return next();
-      res.statusCode = 503;
-      res.setHeader('content-type', 'application/json; charset=utf-8');
-      res.end(
-        JSON.stringify({
-          error: 'rentals_require_wrangler_dev',
-          hint: 'Rentals need the D1 binding. Run: npm run build && npx wrangler dev --local',
-        })
-      );
+      // The webhook is answered too, with a reason rather than the HTML 404 page
+      // arriving where the caller expects JSON. payOS cannot reach localhost, so
+      // there is nothing to serve — but saying so beats a mystery.
+      if (path === '/api/payos/webhook') {
+        res.statusCode = 503;
+        res.setHeader('content-type', 'application/json; charset=utf-8');
+        return res.end(
+          JSON.stringify({
+            error: 'webhook_not_served_in_dev',
+            hint: 'payOS cannot reach localhost. Use `npx wrangler dev --local` with a tunnel, or fulfil the order by hand.',
+          })
+        );
+      }
+      if (!path.startsWith('/api/rent/')) return next();
+
+      let raw = '';
+      req.on('data', (chunk) => (raw += chunk));
+      req.on('end', async () => {
+        const send = (status, payload) => {
+          res.statusCode = status;
+          res.setHeader('content-type', 'application/json; charset=utf-8');
+          res.setHeader('cache-control', 'no-store');
+          res.end(JSON.stringify(payload));
+        };
+
+        let body = null;
+        if (req.method === 'POST' && raw) {
+          try {
+            body = JSON.parse(raw);
+          } catch {
+            return send(400, { error: 'invalid_json' });
+          }
+        }
+
+        // As with the auth middleware: a throw in here would otherwise hang the
+        // request with no status and no log line.
+        try {
+          const env = { ...process.env, ...loadDevVars() };
+          const db = await localD1();
+          if (db) env.DB = db;
+          if (!db) {
+            return send(503, {
+              error: 'rentals_require_local_d1',
+              hint: 'No local D1 found. Run `npx wrangler dev --local` once to create it.',
+            });
+          }
+
+          // Checkout talks to payOS for real, and .dev.vars holds live merchant
+          // keys — so a click on "Thuê ngay" here would create a genuine payment
+          // request in the production dashboard. Refuse unless it is pointed at a
+          // stub, or the real thing is asked for explicitly.
+          if (path === '/api/rent/checkout' && !env.PAYOS_API_BASE_OK) {
+            const stubbed = Boolean(env.PAYOS_BASE_URL);
+            const forced = env.DEV_REAL_PAYOS === '1';
+            if (!stubbed && !forced) {
+              return send(503, {
+                error: 'dev_checkout_would_hit_real_payos',
+                hint:
+                  'Set PAYOS_BASE_URL to a stub, or DEV_REAL_PAYOS=1 to create real ' +
+                  'payment links from the dev server.',
+              });
+            }
+          }
+
+          const { status, body: out } = await handleRentRequest({
+            path,
+            method: req.method,
+            body,
+            cookie: req.headers.cookie,
+            origin: `http://${req.headers.host || 'localhost:4321'}`,
+            env,
+          });
+          send(status, out);
+        } catch (err) {
+          console.error(`[dev-rent] ${path} failed:`, err);
+          send(500, { error: 'dev_handler_failed', reason: String(err?.message || err) });
+        }
+      });
     });
   },
 };
