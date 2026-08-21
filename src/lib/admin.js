@@ -158,7 +158,11 @@ function likeTerm(value) {
  *
  * `q` is always bound, never interpolated: it is user input reaching a LIKE clause.
  */
-function paging(query, { defaultLimit = 50, maxLimit = 200 } = {}) {
+// defaultLimit matches PAGE_SIZE in admin.astro, so hitting the API by hand shows
+// the same page the panel does. maxLimit stays high on purpose: the order editor
+// asks for `limit=200` to list every assignable account, and clamping that to a
+// page size would silently truncate the dropdown it builds from.
+function paging(query, { defaultLimit = 25, maxLimit = 200 } = {}) {
   const limit = Math.min(Math.max(Number(query?.limit) || defaultLimit, 1), maxLimit);
   const page = Math.max(Number(query?.page) || 1, 1);
   const raw = typeof query?.q === 'string' ? query.q.trim().slice(0, 80) : '';
@@ -183,19 +187,38 @@ async function listAccounts(env, actor, query) {
   const statusFilter = typeof query?.status === 'string' && query.status ? ' AND a.status = ?' : '';
   const statusBinds = statusFilter ? [query.status] : [];
 
+  // Group filter. 'none' is a real choice, not an absent one — "which accounts has
+  // nobody filed yet" is the question this answers most often — so it cannot be
+  // expressed by leaving the parameter off.
+  let groupFilter = '';
+  let groupBinds = [];
+  const rawGroup = query?.group;
+  if (typeof rawGroup === 'string' && rawGroup !== '') {
+    if (rawGroup === 'none') {
+      groupFilter = ' AND a.group_id IS NULL';
+    } else {
+      const gid = Number(rawGroup);
+      if (!Number.isFinite(gid)) return { error: 'bad_group' };
+      // Still inside the actor's scope: `where` above is ANDed, so a manager asking
+      // for someone else's group id gets nothing rather than a peek.
+      groupFilter = ' AND a.group_id = ?';
+      groupBinds = [gid];
+    }
+  }
+
   const counted = await env.DB.prepare(
-    `SELECT COUNT(*) AS n ${ACCOUNT_FROM} WHERE 1 = 1${where.sql}${search}${statusFilter}`
+    `SELECT COUNT(*) AS n ${ACCOUNT_FROM} WHERE 1 = 1${where.sql}${search}${statusFilter}${groupFilter}`
   )
-    .bind(...where.binds, ...searchBinds, ...statusBinds)
+    .bind(...where.binds, ...searchBinds, ...statusBinds, ...groupBinds)
     .first();
 
   const rows = await env.DB.prepare(
     `SELECT ${ACCOUNT_COLUMNS} ${ACCOUNT_FROM}
-      WHERE 1 = 1${where.sql}${search}${statusFilter}
+      WHERE 1 = 1${where.sql}${search}${statusFilter}${groupFilter}
       ORDER BY a.id
       LIMIT ? OFFSET ?`
   )
-    .bind(...where.binds, ...searchBinds, ...statusBinds, limit, offset)
+    .bind(...where.binds, ...searchBinds, ...statusBinds, ...groupBinds, limit, offset)
     .all();
   const meta = pageMeta({ total: Number(counted?.n ?? 0), limit, page });
   const items = (rows?.results ?? []).map((r) => ({
@@ -1121,7 +1144,7 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
          LEFT JOIN steam_accounts a ON a.id = o.account_id
         WHERE o.status = 'expired' AND o.notified_at IS NULL${where.sql}
         ORDER BY o.expires_at DESC
-        LIMIT 50`
+        LIMIT 20`
     )
       .bind(...where.binds)
       .all();
@@ -1180,8 +1203,9 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
 
   if (path === '/api/admin/accounts') {
     if (method === 'GET') {
-      const { items, meta } = await listAccounts(env, actor, query);
-      return { status: 200, body: { accounts: items, page: meta } };
+      const listed = await listAccounts(env, actor, query);
+      if (listed.error) return bad(listed.error, 400);
+      return { status: 200, body: { accounts: listed.items, page: listed.meta } };
     }
     if (method === 'POST') return createAccount(env, actor, body);
     return bad('method_not_allowed', 405);
