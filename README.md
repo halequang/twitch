@@ -234,9 +234,14 @@ POST /api/auth/login     {email, password}  → sets the session
 ```
 
 Needs `RESEND_API_KEY` + `RESEND_FROM` (see the reminder section below) and D1.
-The endpoints answer `503 email_signup_unavailable` without a database, so the
-Astro dev server — which has no D1 binding — offers Google/Apple only; use
-`wrangler dev` to exercise this flow locally.
+
+`npm run dev` **does** support this now: the dev server opens the same sqlite file
+`wrangler dev --local` uses and exposes the slice of the D1 API the shared lib
+calls, so sign-up works without a build cycle. It picks the database by scoring
+candidates against this schema, because more than one miniflare file can carry a
+`steam_accounts` table and the wrong one throws `no such table: users`. With no
+local D1 at all the endpoints still answer `503 email_signup_unavailable`, which is
+what "Đăng ký bằng email chưa sẵn sàng" on the page means.
 
 Behaviour worth knowing:
 
