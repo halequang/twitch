@@ -25,7 +25,7 @@ const READABLE_MAIL_DOMAINS = ['outlook.com', 'hotmail.com'];
 
 // One code per minute per rental, and a ceiling per rental. A renter needs a code
 // once or twice; a hundred requests is somebody working on the account, not playing.
-export const CODE_COOLDOWN_SECONDS = 60;
+export const CODE_COOLDOWN_SECONDS = 45;
 export const CODE_MAX_PER_RENTAL = 10;
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -57,6 +57,14 @@ const CREDENTIAL_CHANGE_PATTERNS = [
   /(?:更改|修改|更新|变更)[^。\n]{0,20}(?:电子邮件|電子郵件|邮箱|郵箱|邮件地址)/,
   /(?:移除|删除|移除掉)[^。\n]{0,20}Steam\s*(?:令牌|驗證器|验证器)/,
   /(?:找回|恢复|恢復)[^。\n]{0,10}(?:帐户|帳戶|账户)/,
+  // vi: this pool is Vietnamese-facing, so these come before the Vietnamese login
+  // patterns below — a login entry in a language with no denylist entry is the one
+  // mistake that hands over a credential-change code.
+  /thay [đd][ổo]i[^.\n]{0,40}(?:m[ậa]t kh[ẩa]u|th[ôo]ng tin [đd][ăa]ng nh[ậa]p|email|[đd][ịi]a ch[ỉi] email)/i,
+  /[đd][ặa]t l[ạa]i[^.\n]{0,30}m[ậa]t kh[ẩa]u/i,
+  /c[ậa]p nh[ậa]t[^.\n]{0,40}(?:email|[đd][ịi]a ch[ỉi] email)/i,
+  /(?:x[óo]a|g[ỡo] b[ỏo]|lo[ạa]i b[ỏo])[^.\n]{0,30}steam\s*guard/i,
+  /kh[ôo]i ph[ụu]c[^.\n]{0,30}t[àa]i kho[ảa]n/i,
 ];
 
 /**
@@ -82,6 +90,14 @@ const LOGIN_PATTERNS = [
   /Steam\s*令牌[验驗][证證]码?/,
   /[访訪][问問]帐[户戶]所需/,
   /[访訪][问問][账帳][户戶]所需/,
+  // vi, verbatim from this pool's own mail:
+  //   "Có vẻ như bạn đang cố đăng nhập từ một thiết bị mới. Mã Steam Guard bạn cần
+  //    để đăng nhập vào tài khoản: … GFTM8"
+  // Vietnamese puts the noun first, so "Mã Steam Guard" never matched the English
+  // /steam guard code/ and every one of these mails was refused as unknown.
+  /m[ãa]\s*steam\s*guard/i,
+  /[đd][ăa]ng nh[ậa]p t[ừu] (?:m[ộo]t )?thi[ếe]t b[ịi] m[ớo]i/i,
+  /[đd][ểe] [đd][ăa]ng nh[ậa]p v[àa]o t[àa]i kho[ảa]n/i,
 ];
 
 /**
@@ -102,6 +118,8 @@ const ADVISORY_SENTENCE = [
   /you are receiving this/i,
   /please ignore/i,
   /(?:never|do not|don't) share/i,
+  // vi: "Nếu đây không phải là bạn…", "Vui lòng bỏ qua…", "Không chia sẻ mã này…"
+  /^\s*(?:n[ếe]u|vui l[òo]ng|[đd][ừu]ng|kh[ôo]ng chia s[ẻe]|b[ạa]n nh[ậa]n [đd][ưu][ợo]c)/i,
 ];
 
 /** Splits into sentences on both Latin and CJK terminators, plus line breaks. */
