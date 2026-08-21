@@ -51,6 +51,8 @@ export async function handleRentRequest({ path, method, body, cookie, origin, en
         // new account. Ownership is verified server-side.
         extendOrderCode: body?.extendOrderCode,
         buyOrderCode: body?.buyOrderCode,
+        // How many accounts to rent in this one payment (1..10).
+        quantity: body?.quantity,
       });
     } catch (err) {
       // Surface it in `wrangler tail` — the shop owner needs payOS's actual

@@ -88,6 +88,11 @@ const now = () => Math.floor(Date.now() / 1000);
 //
 // (payOS's own quick-start uses `Number(String(Date.now()).slice(-6))`, which
 // wraps every ~16 minutes and will eventually collide. Don't copy that.)
+// Renting in bulk is one payment for N sibling orders. Ten is the ceiling because
+// each one claims a real login out of a pool that is rarely bigger than that, and
+// a typo in a quantity box should not be able to empty the shop.
+export const MAX_BATCH = 10;
+
 const ORDER_CODE_EPOCH = 1735689600; // 2025-01-01T00:00:00Z
 
 export function nextOrderCode() {
@@ -328,7 +333,7 @@ export async function listPlans(env, game = DEFAULT_GAME, forEmail = null) {
 // payOS caps the description that reaches the bank transfer, and banks mangle
 // non-ASCII. Build the duration from `hours` rather than the Vietnamese label,
 // so "24 giờ" becomes "24h" instead of a truncated "24 gi".
-function shortDescription(plan, isExtension = false) {
+function shortDescription(plan, isExtension = false, count = 1) {
   // payOS caps this at 25 ASCII characters, hence the trimming rather than prose.
   if (plan.purchase) {
     return `Mua acc ${plan.gameName}`.replace(/[^\x20-\x7E]/g, '').slice(0, 25);
@@ -336,7 +341,10 @@ function shortDescription(plan, isExtension = false) {
   // Only collapse to days beyond one, so the "24 giờ" plan still reads "24h".
   const duration = plan.hours >= 48 && plan.hours % 24 === 0 ? `${plan.hours / 24}d` : `${plan.hours}h`;
   const verb = isExtension ? 'Gia han' : 'Thue';
-  return `${verb} ${plan.gameName} ${duration}`.replace(/[^\x20-\x7E]/g, '').slice(0, 25);
+  // The multiplier matters on a bank statement: "x3" is the difference between the
+  // customer recognising the amount and disputing it.
+  const times = count > 1 ? ` x${count}` : '';
+  return `${verb} ${plan.gameName} ${duration}${times}`.replace(/[^\x20-\x7E]/g, '').slice(0, 25);
 }
 
 async function insertOrder(db, order) {
@@ -344,8 +352,8 @@ async function insertOrder(db, order) {
   // caller retries with a fresh one.
   await db
     .prepare(
-      `INSERT INTO orders (order_code, user_key, user_email, game, plan_id, hours, amount, status, created_at, extends_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+      `INSERT INTO orders (order_code, user_key, user_email, game, plan_id, hours, amount, status, created_at, extends_order, batch_of)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
     )
     .bind(
       order.orderCode,
@@ -356,17 +364,28 @@ async function insertOrder(db, order) {
       order.hours,
       order.amount,
       order.createdAt,
-      order.extendsOrder ?? null
+      order.extendsOrder ?? null,
+      order.batchOf ?? null
     )
     .run();
 }
 
 export async function createCheckout(
   env,
-  { user, gameId = DEFAULT_GAME, planId, origin, extendOrderCode, buyOrderCode }
+  { user, gameId = DEFAULT_GAME, planId, origin, extendOrderCode, buyOrderCode, quantity }
 ) {
   const plan = findPlan(gameId, planId);
   if (!plan) return { status: 400, body: { error: 'unknown_plan' } };
+
+  // Quantity is validated, not clamped: silently charging for 10 when someone
+  // asked for 50 is worse than telling them the limit.
+  let count = 1;
+  if (quantity !== undefined && quantity !== null && quantity !== '') {
+    count = Number(quantity);
+    if (!Number.isInteger(count) || count < 1 || count > MAX_BATCH) {
+      return { status: 400, body: { error: 'bad_quantity', max: MAX_BATCH } };
+    }
+  }
 
   const db = env.DB;
   const key = userKey(user);
@@ -375,6 +394,11 @@ export async function createCheckout(
   // there is no way to buy a login they have never had in their hands.
   if (plan.purchase && buyOrderCode == null) {
     return { status: 400, body: { error: 'purchase_needs_rental' } };
+  }
+
+  if (count > 1 && (extendOrderCode != null || buyOrderCode != null)) {
+    // Both act on one specific existing rental, so a quantity has nothing to mean.
+    return { status: 400, body: { error: 'quantity_not_supported_here' } };
   }
 
   // An extension tops up a rental the customer already holds and a purchase takes
@@ -397,7 +421,11 @@ export async function createCheckout(
     gameId = parent.game;
   } else {
     const available = await stockByGame(db, gameId, user?.email ?? null, plan.id);
-    if (available < 1) return { status: 409, body: { error: 'out_of_stock' } };
+    // Checked against the whole batch: taking payment for ten and finding two is a
+    // refund conversation, so it is refused before the money moves.
+    if (available < count) {
+      return { status: 409, body: { error: 'out_of_stock', available, wanted: count } };
+    }
   }
 
   // One unpaid checkout at a time keeps the orders table honest and stops a
@@ -415,6 +443,7 @@ export async function createCheckout(
     .prepare(
       `SELECT order_code, checkout_url FROM orders
         WHERE user_key = ? AND status = 'pending' AND created_at > ?
+          AND batch_of IS NULL
           AND COALESCE(extends_order, 0) = COALESCE(?, 0)
           ${kindClause}`
     )
@@ -456,6 +485,35 @@ export async function createCheckout(
     }
   }
 
+  // The rest of the batch. Each is a full order carrying its own price and its own
+  // account, so revenue, expiry and credentials all work per row exactly as a
+  // single rental does — only the payment is shared.
+  const siblings = [];
+  for (let i = 1; i < count; i++) {
+    let code = orderCode + i;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await insertOrder(db, {
+          orderCode: code,
+          userKey: key,
+          userEmail: user.email ?? null,
+          game: gameId,
+          planId: plan.id,
+          hours: plan.hours,
+          amount: plan.amount,
+          createdAt: now(),
+          extendsOrder: null,
+          batchOf: orderCode,
+        });
+        siblings.push(code);
+        break;
+      } catch (err) {
+        if (attempt >= ORDER_CODE_ATTEMPTS - 1) throw err;
+        code += 1;
+      }
+    }
+  }
+
   // Where payOS sends the customer back. Comes from the game definition so a
   // route rename cannot silently break returning payers.
   const pagePath = GAMES[gameId]?.path || '/thuegame/theisle';
@@ -464,14 +522,14 @@ export async function createCheckout(
   try {
     link = await createPaymentLink(env, {
       orderCode,
-      amount: plan.amount,
-      description: shortDescription(plan, Boolean(parent)),
+      amount: plan.amount * count,
+      description: shortDescription(plan, Boolean(parent), count),
       returnUrl: `${origin}${pagePath}?rent=success&orderCode=${orderCode}`,
       cancelUrl: `${origin}${pagePath}?rent=cancel&orderCode=${orderCode}`,
       expiredAt: now() + 60 * 15,
       // Shown as a line item on the payOS-hosted page. The total must match
       // `amount`, so keep it a single row priced at the full amount.
-      items: [{ name: `${plan.gameName} - ${plan.label}`, quantity: 1, price: plan.amount }],
+      items: [{ name: `${plan.gameName} - ${plan.label}`, quantity: count, price: plan.amount }],
       buyerEmail: user.email ?? undefined,
     });
   } catch (err) {
@@ -479,6 +537,14 @@ export async function createCheckout(
     // phantom "Chờ thanh toán" order that the customer can never continue and
     // that reconciliation keeps asking payOS about.
     await db.prepare(`DELETE FROM orders WHERE order_code = ? AND status = 'pending'`).bind(orderCode).run();
+    // The siblings would otherwise be unreachable: they carry no payment link of
+    // their own and nothing would ever resolve them.
+    if (siblings.length) {
+      await db
+        .prepare(`DELETE FROM orders WHERE batch_of = ? AND status = 'pending'`)
+        .bind(orderCode)
+        .run();
+    }
     throw err;
   }
 
@@ -492,6 +558,8 @@ export async function createCheckout(
     body: {
       checkoutUrl: link.checkoutUrl,
       orderCode,
+      quantity: count,
+      amount: plan.amount * count,
       // Whether payOS will actually serve the in-page form for this merchant.
       embedded: await embeddedCheckoutAvailable(link.checkoutUrl),
     },
@@ -505,7 +573,33 @@ export async function createCheckout(
  * payOS may deliver the same webhook twice, and the return-URL reconciliation
  * can race it.
  */
+/**
+ * Fulfils one order, then every sibling that was paid for alongside it.
+ *
+ * Only the lead carries a payment link, so payOS only ever names the lead — the
+ * webhook and the return-URL poll both arrive with its code. Without this the
+ * siblings would sit 'pending' forever against a payment that had already cleared.
+ *
+ * Each sibling goes through the ordinary single-account path, so a batch is N
+ * normal rentals rather than a special case the sweep or the extender has to know
+ * about. If the pool runs dry part-way the remainder land on 'awaiting_stock',
+ * which already means "paid, needs a human" — better than failing the whole batch
+ * and leaving the customer with nothing.
+ */
 export async function fulfilOrder(env, orderCode) {
+  const result = await fulfilSingle(env, orderCode);
+
+  const siblings = await env.DB
+    .prepare(`SELECT order_code FROM orders WHERE batch_of = ? AND status = 'pending'`)
+    .bind(orderCode)
+    .all();
+  for (const row of siblings?.results ?? []) {
+    await fulfilSingle(env, row.order_code);
+  }
+  return result;
+}
+
+async function fulfilSingle(env, orderCode) {
   const db = env.DB;
   const order = await db
     .prepare(`SELECT * FROM orders WHERE order_code = ?`)
@@ -687,15 +781,26 @@ async function reconcilePending(env, orders) {
   for (const order of orders) {
     if (order.status !== 'pending') continue;
     try {
-      const info = await getPaymentInfo(env, order.order_code);
+      // payOS knows the lead's code, never a sibling's — a sibling carries no
+      // payment of its own. Ask about the lead, and fulfilling it sweeps up the
+      // whole batch including this row.
+      const askFor = order.batch_of ?? order.order_code;
+      const info = await getPaymentInfo(env, askFor);
       if (isPaid(info)) {
-        await fulfilOrder(env, order.order_code);
+        await fulfilOrder(env, askFor);
       } else if (info?.status === 'CANCELLED' || info?.status === 'EXPIRED') {
         // Kept apart so the page can say "you cancelled" rather than the
         // misleading "your payment link ran out", and vice versa.
         const status = info.status === 'EXPIRED' ? 'payment_expired' : 'cancelled';
         await env.DB.prepare(`UPDATE orders SET status = ? WHERE order_code = ? AND status = 'pending'`)
           .bind(status, order.order_code)
+          .run();
+        // The siblings share that one payment, so they died with it. Leaving them
+        // pending would show the customer rows they can never pay for.
+        await env.DB.prepare(
+          `UPDATE orders SET status = ? WHERE batch_of = ? AND status = 'pending'`
+        )
+          .bind(status, askFor)
           .run();
       }
       // PENDING / PROCESSING: a bank transfer still in flight. Leave it alone —

@@ -257,6 +257,18 @@ const rentalGame = GAMES[DEFAULT_GAME];
               </p>
               <p class="plan-note">{plan.note}</p>
               <p class="plan-stock" data-stock-for={plan.id}>&nbsp;</p>
+              <label class="plan-qty">
+                <span>Số lượng</span>
+                <input
+                  type="number"
+                  class="qty-input"
+                  data-qty-for={plan.id}
+                  value="1"
+                  min="1"
+                  max="10"
+                  inputmode="numeric"
+                />
+              </label>
               {plan.perks && (
                 <div class="plan-perks">
                   <p class="perks-title">★ Đặc quyền gói tuần</p>
@@ -1419,6 +1431,32 @@ const rentalGame = GAMES[DEFAULT_GAME];
   }
 
   /* A plan whose own stock is gone, while others may still be rentable. */
+  .plan-qty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin: 0 0 14px;
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    color: var(--isle-green);
+  }
+
+  .qty-input {
+    width: 64px;
+    padding: 5px 8px;
+    font: inherit;
+    font-size: 14px;
+    text-align: center;
+    color: var(--isle-cream);
+    background: var(--isle-bg);
+    border: 1px solid var(--isle-line);
+    border-radius: 3px;
+  }
+
+  .qty-input:focus { outline: none; border-color: var(--isle-gold); }
+  .plan.sold-out .plan-qty { opacity: 0.45; }
+
   .plan-stock {
     margin: 0 0 14px;
     font-size: 11.5px;
@@ -2751,6 +2789,16 @@ const rentalGame = GAMES[DEFAULT_GAME];
       const card = btn.closest('.plan');
       if (card) card.classList.toggle('sold-out', out);
 
+      // Cap the box at what this plan can actually supply, so a bulk rent is not
+      // refused as out_of_stock after the customer has committed to a number.
+      const qty = document.querySelector('.qty-input[data-qty-for="' + plan.id + '"]');
+      if (qty) {
+        const cap = Math.max(Math.min(left, 10), 1);
+        qty.max = String(cap);
+        qty.disabled = out;
+        if (Number(qty.value) > cap) qty.value = String(cap);
+      }
+
       const label = document.querySelector('.plan-stock[data-stock-for="' + plan.id + '"]');
       if (label) {
         // Counted for this plan specifically — the VOIP week only counts accounts
@@ -2829,6 +2877,13 @@ const rentalGame = GAMES[DEFAULT_GAME];
     loadRentals();
   });
 
+  /** What the quantity box for this plan says, floored at 1. */
+  function quantityFor(planId) {
+    const input = document.querySelector('.qty-input[data-qty-for="' + planId + '"]');
+    const n = Number(input?.value);
+    return Number.isInteger(n) && n >= 1 ? n : 1;
+  }
+
   async function startCheckout(planId, button, extendOrderCode = null, buyOrderCode = null) {
     button.disabled = true;
     try {
@@ -2838,6 +2893,9 @@ const rentalGame = GAMES[DEFAULT_GAME];
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           planId,
+          // Only a plain rental has a quantity; extending or buying acts on one
+          // existing rental, and the server rejects a count there.
+          ...(extendOrderCode || buyOrderCode ? {} : { quantity: quantityFor(planId) }),
           ...(extendOrderCode ? { extendOrderCode } : {}),
           ...(buyOrderCode ? { buyOrderCode } : {}),
         }),
