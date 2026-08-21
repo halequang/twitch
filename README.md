@@ -272,6 +272,39 @@ Behaviour worth knowing:
 to intervene. The pieces are all here (`email_codes` already carries a `purpose`
 column) but the flow is not wired.
 
+## Reaching the database
+
+```bash
+scripts/db.sh                        # interactive sqlite3 shell on the local D1
+scripts/db.sh "SELECT * FROM users"  # one query, column output
+scripts/db.sh --path                 # print the file, e.g. to attach it in an IDE
+scripts/db.sh --remote "SELECT 1"    # run against PRODUCTION, via wrangler
+scripts/db.sh --wrangler "SELECT 1"  # local, but through wrangler
+```
+
+Or directly, when you want the flags yourself:
+
+```bash
+npx wrangler d1 execute fungaming-rentals --local  --command "SELECT 1"
+npx wrangler d1 execute fungaming-rentals --remote --command "SELECT 1"
+npx wrangler d1 execute fungaming-rentals --local  --file=./migrations/0001_rentals.sql
+```
+
+Worth knowing:
+
+- **The local file is found, not hardcoded.** miniflare names it after a hash, and
+  several files sit in that directory — more than one with a `steam_accounts`
+  table, including a stale one with no `users` table. `scripts/db.sh` scores the
+  candidates against the real schema, the same way the dev server's D1 shim does,
+  so it cannot hand you the wrong database.
+- **`sqlite3` reads the file directly**: fast, and you get `.tables`, `.schema` and
+  column output. Prefer `--wrangler` for *writes* while `wrangler dev` is running,
+  since that process holds the file open.
+- **`--remote` is production.** There is no undo, and the two databases share no
+  state — a migration applied locally is not applied remotely.
+- `d1_migrations` is wrangler's own bookkeeping table; the migrations in this repo
+  are applied by hand with `--file=`, so it will not list them.
+
 ## Steam account rentals (The Isle) via payOS
 
 The `/thuegame/theisle` member area sells timed rentals of shop-owned Steam accounts. A
