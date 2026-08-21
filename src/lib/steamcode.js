@@ -165,6 +165,42 @@ export function classifyCode(body) {
  * ("day 2", "red_flag", "80k 1 tuan"), so "guard" is one token among others and a
  * substring test would also fire on something like "guardian".
  */
+/**
+ * How many of the newest mails are considered.
+ *
+ * Two, not one: this pool has one mailbox behind 28 accounts, so an unrelated Steam
+ * mail can land between the renter triggering a login and pressing the button,
+ * burying the code they need under one they cannot use.
+ *
+ * And two, not five: the further back this reaches, the likelier the code has
+ * expired or belongs to somebody else's attempt entirely — either way the renter
+ * burns an attempt on a code Steam rejects.
+ */
+export const CODE_SCAN_DEPTH = 2;
+
+/**
+ * Chooses which mail's code to hand over.
+ *
+ * Returns { mail, depth } for the newest mail that is a login code, where depth 0 is
+ * the newest of all. A credential-change mail is never chosen — it is skipped past,
+ * not served — so looking deeper cannot turn a refusal into a takeover.
+ *
+ * With nothing eligible, `mail` is null and `purpose` describes the NEWEST mail,
+ * since that is the one the renter's own action most likely produced.
+ */
+export function pickLoginCode(emails, depth = CODE_SCAN_DEPTH) {
+  const withCode = (Array.isArray(emails) ? emails : []).filter((m) => m?.code);
+  const scanned = withCode.slice(0, Math.max(1, depth)).map((mail) => ({
+    mail,
+    purpose: classifyCode(`${mail.readable ?? ''}\n${mail.subject ?? ''}`),
+  }));
+  const at = scanned.findIndex((c) => c.purpose === 'login');
+  if (at === -1) {
+    return { mail: null, depth: -1, purpose: scanned[0]?.purpose ?? 'unknown', scanned: scanned.length };
+  }
+  return { mail: scanned[at].mail, depth: at, purpose: 'login', scanned: scanned.length };
+}
+
 export function hasGuardFlag(note, internalNote) {
   return /(^|\s)guard(\s|$)/i.test(`${note ?? ''} ${internalNote ?? ''}`.trim());
 }
@@ -328,12 +364,9 @@ export async function requestSteamCode(env, user, orderCode) {
     return { status: 404, body: { error: 'no_code_yet' } };
   }
 
-  // Newest first, as the endpoint returns them. Only the newest is considered: an
-  // older login code has almost certainly expired, and reaching further back is how
-  // a stale code gets served.
-  const newest = withCode[0];
-  const purpose = classifyCode(`${newest.readable ?? ''}\n${newest.subject ?? ''}`);
-  if (purpose !== 'login') {
+  // Newest first, as the endpoint returns them.
+  const picked = pickLoginCode(withCode);
+  if (!picked.mail) {
     await logRequest(db, { ...audit, outcome: 'refused_purpose' });
     return {
       status: 409,
@@ -341,16 +374,19 @@ export async function requestSteamCode(env, user, orderCode) {
         error: 'code_not_for_login',
         // Named so a renter knows this is deliberate, without describing what the
         // code would have done.
-        purpose,
+        purpose: picked.purpose,
       },
     };
   }
 
-  await logRequest(db, { ...audit, outcome: 'served' });
+  // Recorded separately when the newest mail was not the one used: on a shared
+  // mailbox that is the visible symptom of contention, and the shop has no other
+  // way to see how often two renters are colliding.
+  await logRequest(db, { ...audit, outcome: picked.depth === 0 ? 'served' : 'served_older' });
   return {
     status: 200,
     body: {
-      code: newest.code,
+      code: picked.mail.code,
       // The mailbox address is deliberately not returned: handing it over would let
       // a renter reset the password directly.
       login: order.login,
