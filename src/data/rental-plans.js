@@ -99,6 +99,25 @@ export const TAG_ONLY_PLANS = {
   no_ban: ['isle-7d-voip'],
 };
 
+/**
+ * Tags a plan REQUIRES, not merely prefers. An account without every tag listed
+ * here can never fulfil that plan.
+ *
+ * TAG_ONLY_PLANS above is the other direction — it holds tagged accounts back FOR
+ * a plan. On its own that still let a VOIP week be filled from the untagged pool
+ * whenever no_ban stock ran dry, which is the one thing that plan cannot do: its
+ * perks mean signing in on a server's own site, and an account nobody has verified
+ * is exactly what fails there.
+ */
+export const PLAN_REQUIRED_TAGS = {
+  'isle-7d-voip': ['no_ban'],
+};
+
+/** Tags without which this plan cannot be fulfilled at all. */
+export function tagsRequiredBy(planId) {
+  return PLAN_REQUIRED_TAGS[planId] ?? [];
+}
+
 /** Tags that must NOT be handed to this plan. */
 export function tagsBarredFrom(planId) {
   return Object.entries(TAG_ONLY_PLANS)

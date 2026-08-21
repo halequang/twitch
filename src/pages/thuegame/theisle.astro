@@ -211,10 +211,9 @@ const rentalGame = GAMES[DEFAULT_GAME];
         </div>
       </div>
 
-      <div class="rent-stock">
-        <span class="stock-label">Tài khoản còn trống</span>
-        <span class="stock-value" id="rentStock">—</span>
-      </div>
+      <!-- One pool-wide figure was misleading once plans stopped sharing a pool:
+           a no_ban account counts for the VOIP week and for nothing else. The
+           number now lives on each card, next to the price it applies to. -->
 
       <!-- Above the plan cards on purpose: this is the one limitation that can make
            renting the wrong choice, so it has to be read before "Thuê ngay" rather
@@ -257,6 +256,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
                 <span class="plan-exact">{formatVnd(plan.amount)}</span>
               </p>
               <p class="plan-note">{plan.note}</p>
+              <p class="plan-stock" data-stock-for={plan.id}>&nbsp;</p>
               {plan.perks && (
                 <div class="plan-perks">
                   <p class="perks-title">★ Đặc quyền gói tuần</p>
@@ -1289,30 +1289,6 @@ const rentalGame = GAMES[DEFAULT_GAME];
     .embed-head { flex-wrap: wrap; }
   }
 
-  .rent-stock {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 10px;
-    margin-bottom: 24px;
-    padding: 8px 18px;
-    border: 1px solid var(--isle-line);
-    border-radius: 999px;
-    background: var(--isle-bg-2);
-  }
-
-  .stock-label {
-    font-size: 10px;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--isle-green);
-  }
-
-  .stock-value {
-    font-family: 'Cinzel', serif;
-    font-size: 17px;
-    color: var(--isle-cream);
-  }
-
   .plans {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -1443,6 +1419,17 @@ const rentalGame = GAMES[DEFAULT_GAME];
   }
 
   /* A plan whose own stock is gone, while others may still be rentable. */
+  .plan-stock {
+    margin: 0 0 14px;
+    font-size: 11.5px;
+    letter-spacing: 0.04em;
+    color: var(--isle-green);
+    min-height: 1em;
+  }
+
+  .plan-stock.low { color: var(--isle-gold); }
+  .plan-stock.none { color: #d98a8a; }
+
   .plan.sold-out {
     opacity: 0.55;
   }
@@ -2757,11 +2744,21 @@ const rentalGame = GAMES[DEFAULT_GAME];
     for (const plan of plans || []) {
       const btn = document.querySelector('.rent-btn[data-plan="' + plan.id + '"]');
       if (!btn) continue;
-      const out = Number(plan.available) === 0;
+      const left = Number(plan.available) || 0;
+      const out = left === 0;
       btn.disabled = out;
       btn.textContent = out ? 'Tạm hết' : 'Thuê ngay';
       const card = btn.closest('.plan');
       if (card) card.classList.toggle('sold-out', out);
+
+      const label = document.querySelector('.plan-stock[data-stock-for="' + plan.id + '"]');
+      if (label) {
+        // Counted for this plan specifically — the VOIP week only counts accounts
+        // marked no_ban, so its figure is legitimately smaller than its neighbour's.
+        label.textContent = out ? 'Tạm hết tài khoản' : `Còn ${left} tài khoản`;
+        label.classList.toggle('none', out);
+        label.classList.toggle('low', !out && left <= 2);
+      }
     }
   }
 
@@ -2770,13 +2767,12 @@ const rentalGame = GAMES[DEFAULT_GAME];
       const res = await fetch('/api/rent/plans', { credentials: 'same-origin' });
       if (!res.ok) throw new Error(String(res.status));
       const data = await res.json();
-      el('rentStock').textContent = String(data.available);
       applyPlanStock(data.plans);
       // data.available is the best any single plan can do, so this only fires when
       // every plan is empty — not when one tagged tier has run out.
       if (data.available === 0) rentNotice('Hiện đã hết tài khoản trống. Vui lòng quay lại sau.', false);
     } catch {
-      el('rentStock').textContent = '—';
+      for (const label of document.querySelectorAll('.plan-stock')) label.textContent = '—';
       setPlansEnabled(false);
     }
   }

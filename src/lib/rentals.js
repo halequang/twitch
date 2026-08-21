@@ -21,6 +21,7 @@ import {
   purchasePlan,
   tagsBarredFrom,
   tagsPreferredBy,
+  tagsRequiredBy,
 } from '../data/rental-plans.js';
 import { hasGuardFlag } from './steamcode.js';
 import {
@@ -191,6 +192,14 @@ function tagMatch(tag, prefix = '') {
   return `${tagTokenSql(`${prefix}internal_note`)} LIKE '% ${tag} %'`;
 }
 
+/** ` AND <tag> …` for every tag this plan cannot be fulfilled without. */
+function tagRequireSql(planId, prefix = '') {
+  const required = planId ? tagsRequiredBy(planId) : [];
+  return required.length
+    ? ` AND ${required.map((t) => tagMatch(t, prefix)).join(' AND ')}`
+    : '';
+}
+
 /** ` AND NOT <tag> …` for every tag this plan must not be given. */
 function tagBarSql(planId, prefix = '') {
   const barred = planId ? tagsBarredFrom(planId) : [];
@@ -220,7 +229,7 @@ async function countStock(db, game, forEmail, planId) {
     .prepare(
       `SELECT COUNT(*) AS n FROM steam_accounts
         WHERE game = ? AND status = 'available'
-          AND (reserved_for IS NULL OR lower(reserved_for) = lower(?))${tagBarSql(planId)}`
+          AND (reserved_for IS NULL OR lower(reserved_for) = lower(?))${tagRequireSql(planId)}${tagBarSql(planId)}`
     )
     .bind(game, forEmail ?? '')
     .first();
@@ -261,7 +270,7 @@ async function claimAccount(db, game, forEmail = null, planId = null) {
         WHERE id = (
           SELECT s.id FROM steam_accounts s
            WHERE s.game = ? AND s.status = 'available'
-             AND (s.reserved_for IS NULL OR lower(s.reserved_for) = lower(?))${tagBarSql(planId, 's.')}
+             AND (s.reserved_for IS NULL OR lower(s.reserved_for) = lower(?))${tagRequireSql(planId, 's.')}${tagBarSql(planId, 's.')}
            ORDER BY
              CASE WHEN s.reserved_for IS NULL THEN 1 ELSE 0 END,
              ${tagPreferSql(planId, 's.')}
