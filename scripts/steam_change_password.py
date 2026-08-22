@@ -90,6 +90,7 @@ Usage:
     python steam_change_password.py --db --remote --account <login> --mode email \
         --new-email new@outlook.com [--new-email-password <pw>]
     python steam_change_password.py --db [--remote] [--force] [--yes] [--keep-open]
+    python steam_change_password.py --db [--remote] --repair-db
     python steam_change_password.py --db --remote --account egrot16122,ywhods4353
 """
 import json
@@ -424,6 +425,88 @@ def update_db_password(db_id, new_pass, remote, key):
         "RETURNING status",
         remote)
     return (rows[0].get("status") if rows else "") or ""
+
+
+def repair_failed_db_writes(result_file, remote, enc_key, where):
+    """Writes passwords that Steam already has but the database missed.
+
+    An OK_DB_UPDATE_FAILED row means the rotation succeeded and only the DB write
+    failed, so the correct new password is sitting in the result file. Re-running
+    the rotation would change the Steam password AGAIN and burn another Guard code
+    to recover something already recorded — this replays the write instead.
+
+    Reads the LAST line per login, so an account repaired earlier is not repaired
+    twice and one that later rotated cleanly is left alone.
+    """
+    if not os.path.exists(result_file):
+        print(f"[repair] no result file at {result_file}")
+        return
+
+    latest = {}
+    with open(result_file, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.rstrip("\n").split("|")
+            if len(parts) < 5 or not parts[0]:
+                continue
+            latest[parts[0]] = {"new_pass": parts[3], "status": parts[4]}
+
+    broken = {u: r for u, r in latest.items()
+              if r["status"] == "OK_DB_UPDATE_FAILED" and r["new_pass"]}
+    # A row with no recorded password cannot be repaired from here: the password is
+    # only written to the file on success, so there is nothing to replay.
+    unfixable = [u for u, r in latest.items()
+                 if r["status"] == "OK_DB_UPDATE_FAILED" and not r["new_pass"]]
+
+    print(f"[repair] {where}: {len(broken)} account(s) with a password Steam has "
+          f"and the database does not.")
+    if unfixable:
+        print(f"[repair] {len(unfixable)} more cannot be repaired from the file "
+              f"(no password recorded): {', '.join(unfixable)}")
+    if not broken:
+        return
+
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for user, row in broken.items():
+        accounts = load_db_accounts_by_login([user], remote, enc_key)
+        if not accounts:
+            print(f"  ⚠️  [{user}] not in the database — skipped")
+            continue
+        db_id = accounts[0]["db_id"]
+        try:
+            new_status = _db_write_with_retry(
+                user, lambda: update_db_password(db_id, row["new_pass"], remote, enc_key))
+            print(f"  ✅ [{user}] password written, status={new_status or '?'} (id={db_id})")
+            with open(result_file, "a", encoding="utf-8") as f:
+                # steam_user|email|old_pass|new_pass|status|timestamp — email and
+                # old_pass are blank here because this replays a write, not a change.
+                f.write(f"{user}|||{row['new_pass']}|OK_DB_REPAIRED|{ts}\n")
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠️  [{user}] still failing: {e}")
+
+
+def _db_write_with_retry(label, action, attempts=4, base_delay=3):
+    """Runs a DB write, retrying a transient failure.
+
+    By the time this is called the Steam password has ALREADY been changed, so
+    giving up leaves the row holding a dead credential while the account sits in
+    the rental pool — the next customer gets a login that cannot work. D1 fails
+    transiently often enough to matter (D1_RESET_DO, a wrangler auth blip), so one
+    attempt was never enough.
+
+    Backs off linearly rather than hammering: 3s, 6s, 9s.
+    """
+    last = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return action()
+        except Exception as e:  # noqa: BLE001 - any failure is worth another try
+            last = e
+            if attempt < attempts:
+                wait = base_delay * attempt
+                print(f"  ↻ [{label}] DB write failed ({e}); "
+                      f"retry {attempt}/{attempts - 1} in {wait}s")
+                time.sleep(wait)
+    raise last
 
 
 def _cli_values(argv, name):
@@ -1227,6 +1310,9 @@ def main():
     # --account <login>[,<login>...] : force a password change for these specific
     # accounts (bypasses the rental-over selection and the already-done skip).
     account_logins = _cli_values(args, "account")
+    # --repair-db writes passwords that were already changed on Steam but never made
+    # it into the database. Touches no browser and no Steam account.
+    repair_db = "--repair-db" in args
     # --mode email changes the account's contact ADDRESS instead of its password.
     mode = (_cli_values(args, "mode") or ["password"])[0].lower()
     if mode not in ("password", "email"):
@@ -1247,6 +1333,10 @@ def main():
         result_file = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "rental_rotate_results.txt")
         where = "REMOTE (production)" if remote else "local"
+
+        if repair_db:
+            repair_failed_db_writes(result_file, remote, enc_key, where)
+            return
         try:
             if account_logins:
                 what = "email change" if mode == "email" else "password change"
@@ -1377,8 +1467,10 @@ def main():
                 status = change_email(driver, acc, new_email, new_mail_acc)
                 if status == "OK" and use_db and acc.get("db_id") is not None:
                     try:
-                        update_db_email(acc["db_id"], new_email, new_mail_password,
-                                        remote, enc_key)
+                        _db_write_with_retry(
+                            user,
+                            lambda: update_db_email(acc["db_id"], new_email,
+                                                    new_mail_password, remote, enc_key))
                         print(f"  [{user}] DB email updated -> {new_email}"
                               + ("" if new_mail_password
                                  else "  (mail password NOT updated — pass "
@@ -1397,7 +1489,8 @@ def main():
             # the rental DB so the freed account carries the rotated credential.
             if status == "OK" and use_db:
                 try:
-                    new_status = update_db_password(acc["db_id"], new_pass, remote, enc_key)
+                    new_status = _db_write_with_retry(
+                        user, lambda: update_db_password(acc["db_id"], new_pass, remote, enc_key))
                     print(f"  [{user}] DB password_enc updated, status={new_status or '?'} "
                           f"(id={acc['db_id']}).")
                     if new_status in ("sold", "disabled"):
@@ -1416,7 +1509,14 @@ def main():
                               f"the rental before rotating.")
                         status = "OK_STILL_RENTED"
                 except Exception as e:
-                    print(f"  [{user}] DB update FAILED: {e}")
+                    print(f"  [{user}] DB update FAILED after retries: {e}")
+                    print(f"  ⚠️  [{user}] Steam now has the NEW password but the "
+                          f"database still has the old one, and the account is still "
+                          f"rentable — the next customer would get a dead login. "
+                          f"The new password is in the result file; write it to the DB "
+                          f"with:\n"
+                          f"        python scripts/steam_change_password.py --db"
+                          f"{' --remote' if remote else ''} --repair-db")
                     status = "OK_DB_UPDATE_FAILED"
             recorded_new = new_pass if status.startswith("OK") else ""
             record(user, acc["email"], acc["steam_pass"], recorded_new, status)
