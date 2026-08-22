@@ -103,6 +103,12 @@ Usage:
         --new-email new@outlook.com [--new-email-password <pw>]
     python steam_change_password.py --db [--remote] [--force] [--yes] [--keep-open]
     python steam_change_password.py --db [--remote] --repair-db
+
+Environment:
+    STEAM_CHPW_HEADLESS=1|0  force headless on or off. Default: headless on Linux
+                             with no DISPLAY, windowed everywhere else.
+    CHROME_BINARY=/path      the browser to drive. Needed on ARM Linux, where no
+                             Google Chrome build exists and Chromium is the option.
     python steam_change_password.py --db --remote --account egrot16122,ywhods4353
 """
 import json
@@ -906,6 +912,14 @@ def create_driver(chrome_path):
     import tempfile
     profile_dir = tempfile.mkdtemp(prefix="steam_chpw_")
     opts = Options()
+    # Selenium looks for Google Chrome by name. There is no Google Chrome build for
+    # ARM Linux, so on an ARM server the browser has to be Chromium and its path
+    # given explicitly — CHROME_BINARY=/usr/bin/chromium — rather than editing this.
+    binary = os.environ.get("CHROME_BINARY", "").strip()
+    if binary:
+        if not os.path.exists(binary):
+            raise RuntimeError(f"CHROME_BINARY does not exist: {binary}")
+        opts.binary_location = binary
     opts.add_argument(f"--user-data-dir={profile_dir}")
     if HEADLESS:
         opts.add_argument("--headless=new")
@@ -942,6 +956,8 @@ def create_driver(chrome_path):
             "    DISPLAY is unset, or force it with STEAM_CHPW_HEADLESS=1.\n"
             "  · Chrome itself installed? webdriver-manager fetches the DRIVER, never the\n"
             "    browser. Check with: google-chrome --version\n"
+            "  · On ARM Linux there is no Google Chrome build — install Chromium and\n"
+            "    point at it: CHROME_BINARY=/usr/bin/chromium\n"
             "  · Version mismatch between Chrome and chromedriver? Clear the cache:\n"
             "    rm -rf ~/.wdm\n"
             "  · Running as root or in a container adds --no-sandbox and\n"
