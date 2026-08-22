@@ -21,6 +21,9 @@
  * later change to PASSWORD_KDF_ITERATIONS cannot strand this row.
  */
 
+// Puts CLOUDFLARE_API_TOKEN into the environment so a `--remote` run authenticates
+// with the deploy token instead of falling back to the OAuth session.
+import './_cfenv.mjs';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';

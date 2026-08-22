@@ -1032,6 +1032,50 @@ const rentalGame = GAMES[DEFAULT_GAME];
 
   .rent-orders :global(.extend-btn:disabled) { opacity: 0.5; cursor: not-allowed; }
 
+  .rent-orders :global(.upgrade) {
+    width: 100%;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--isle-line);
+  }
+
+  .rent-orders :global(.upgrade-row) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+    margin-top: 8px;
+  }
+
+  .rent-orders :global(.upgrade-btn) {
+    padding: 8px 15px;
+    font-family: 'Inter', sans-serif;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--isle-cream);
+    background: rgba(232, 200, 119, 0.1);
+    border: 1px solid var(--gold-dim);
+    border-radius: 3px;
+    cursor: pointer;
+    transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+  }
+
+  .rent-orders :global(.upgrade-btn:hover:not(:disabled)) {
+    color: var(--gold-bright);
+    border-color: var(--gold);
+    background: rgba(232, 200, 119, 0.18);
+  }
+
+  .rent-orders :global(.upgrade-btn:disabled) { opacity: 0.5; cursor: not-allowed; }
+
+  .rent-orders :global(.upgrade-note) {
+    flex: 1 1 220px;
+    margin: 0;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--text-muted);
+  }
+
   .rent-orders :global(.buy) {
     width: 100%;
     margin-top: 12px;
@@ -2132,6 +2176,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
     awaiting_stock: 'Đã thanh toán — hết tài khoản',
     error: 'Lỗi đọc tài khoản',
     sold: 'Đã chuyển sang mua',
+    upgraded: 'Đã nâng cấp gói',
   };
 
   let countdownTimer = null;
@@ -2536,6 +2581,12 @@ const rentalGame = GAMES[DEFAULT_GAME];
       return wrap;
     }
 
+    // Above the extend row on purpose: moving to a better plan is usually what
+    // somebody on the 1-day plan actually wants, and it costs less than extending
+    // twice. `upgrades` is server-built — it already knows the price difference,
+    // whether the login changes and whether the stock is there.
+    if (order.upgrades?.length) wrap.appendChild(upgradeControls(order));
+
     const label = document.createElement('span');
     label.className = 'extend-label';
     label.textContent = 'Gia hạn thêm:';
@@ -2550,8 +2601,78 @@ const rentalGame = GAMES[DEFAULT_GAME];
       wrap.appendChild(btn);
     }
 
-    if (BUY_PLAN) wrap.appendChild(buyControls(order));
+    // Buying is only offered on an account the shop is willing to part with — a
+    // vetted no_ban one. `forSale` comes from the server, which alone can read the
+    // internal_note the tag lives in.
+    if (BUY_PLAN && order.forSale) wrap.appendChild(buyControls(order));
     return wrap;
+  }
+
+  /**
+   * Moving this rental onto a better plan, charged the difference.
+   *
+   * Every figure comes from the server: `amount` is the top-up, not the plan price,
+   * and `swapsAccount` says whether the login changes — which it does when the VOIP
+   * week is served from the vetted pool and this rental is not on one. That warning
+   * is the reason this is not just another row of buttons: a customer mid-session
+   * needs to know they will be handed different credentials.
+   */
+  function upgradeControls(order) {
+    const box = document.createElement('div');
+    box.className = 'upgrade';
+
+    const label = document.createElement('span');
+    label.className = 'extend-label';
+    label.textContent = 'Nâng cấp gói:';
+    box.appendChild(label);
+
+    for (const up of order.upgrades) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'upgrade-btn';
+      const perks = up.perks?.length ? ' · ' + up.perks.join(' + ') : '';
+      // "+30k" rather than "50k": the number on the button has to be the number
+      // that leaves their bank, or the price looks like a mistake.
+      btn.textContent = (up.icon ? up.icon + ' ' : '') + up.label + perks + ' · +' + compact(up.amount);
+
+      const note = document.createElement('p');
+      note.className = 'upgrade-note';
+
+      if (!up.available) {
+        // Only ever set when the move needs a different login and there is none
+        // free — the plan itself is not sold out, this customer just cannot be
+        // moved onto it right now.
+        btn.disabled = true;
+        note.textContent = 'Tạm hết tài khoản phù hợp cho gói này — thử lại sau nhé.';
+      } else {
+        note.textContent =
+          'Chỉ trả thêm ' + compact(up.amount) + ' (giá gói ' + compact(up.fullAmount) + ')' +
+          (up.expiresAt ? ' · dùng đến ' + fmtWhen(up.expiresAt) : '') +
+          (up.swapsAccount ? ' · bạn sẽ nhận TÀI KHOẢN MỚI, hãy thoát game trước khi nâng cấp' : ' · giữ nguyên tài khoản đang dùng');
+      }
+
+      btn.addEventListener('click', () => {
+        // Same two-step as the buy-out: an upgrade can change the login out from
+        // under a live session, so it must not fire on one stray click.
+        if (btn.dataset.confirming !== '1') {
+          btn.dataset.confirming = '1';
+          btn.dataset.label = btn.textContent;
+          btn.textContent = 'Xác nhận nâng cấp +' + compact(up.amount) + '?';
+          note.textContent = up.swapsAccount
+            ? 'Bấm lần nữa để tạo đơn. Tài khoản sẽ được đổi sang login mới sau khi thanh toán.'
+            : 'Bấm lần nữa để tạo đơn. Tài khoản đang dùng được giữ nguyên.';
+          return;
+        }
+        startCheckout(up.id, btn, null, null, order.orderCode);
+      });
+
+      const row = document.createElement('div');
+      row.className = 'upgrade-row';
+      row.append(btn, note);
+      box.appendChild(row);
+    }
+
+    return box;
   }
 
   /**
@@ -2608,7 +2729,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
   }
 
   // Statuses that are done moving — polling can stop once an order reaches one.
-  const TERMINAL = new Set(['active', 'expired', 'cancelled', 'payment_expired', 'awaiting_stock', 'error', 'extended']);
+  const TERMINAL = new Set(['active', 'expired', 'cancelled', 'payment_expired', 'awaiting_stock', 'error', 'extended', 'upgraded']);
 
   async function loadRentals() {
     const list = el('rentOrders');
@@ -2632,7 +2753,9 @@ const rentalGame = GAMES[DEFAULT_GAME];
       // Finished and abandoned orders are noise once they are done; the notice
       // above carries the outcome instead.
       const relevant = (orders || []).filter(
-        (o) => !['expired', 'cancelled', 'payment_expired', 'extended'].includes(o.status)
+        // 'upgraded' is the rental a paid upgrade replaced: its successor is in this
+        // same list, active and on the new plan, so showing both reads as two rentals.
+        (o) => !['expired', 'cancelled', 'payment_expired', 'extended', 'upgraded'].includes(o.status)
       );
       for (const order of relevant) list.appendChild(renderOrder(order));
       // While the payment form is open, the same order also showing a
@@ -2729,9 +2852,14 @@ const rentalGame = GAMES[DEFAULT_GAME];
     const modal = el('doneModal');
     if (!modal) return;
     const extension = order.status === 'extended';
+    const upgraded = order.upgradesOrder != null && order.status === 'active';
     const { creds, expiresAt } = doneCredentials(order, orders);
 
-    el('doneTitle').textContent = extension ? 'Gia hạn thành công' : 'Đơn hoàn tất';
+    el('doneTitle').textContent = extension
+      ? 'Gia hạn thành công'
+      : upgraded
+        ? 'Nâng cấp thành công'
+        : 'Đơn hoàn tất';
     el('doneSub').textContent =
       'Mã đơn ' + order.orderCode + ' · ' + order.hours + ' giờ' +
       (expiresAt ? ' · dùng đến ' + fmtWhen(expiresAt) : '');
@@ -2798,7 +2926,11 @@ const rentalGame = GAMES[DEFAULT_GAME];
         rentNotice(
           order.status === 'extended'
             ? 'Gia hạn thành công — thời hạn thuê đã được cộng thêm.'
-            : 'Thanh toán thành công — tài khoản của bạn đã sẵn sàng bên dưới.',
+            : order.upgradesOrder != null
+              // A paid upgrade arrives as an ordinary active order; only this field
+              // says it replaced one, and the login may have changed with it.
+              ? 'Nâng cấp thành công — kiểm tra thông tin đăng nhập bên dưới, tài khoản có thể đã đổi.'
+              : 'Thanh toán thành công — tài khoản của bạn đã sẵn sàng bên dưới.',
           false
         );
         return openDoneModal(order, orders);
@@ -3011,7 +3143,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
     return Number.isInteger(n) && n >= 1 ? n : 1;
   }
 
-  async function startCheckout(planId, button, extendOrderCode = null, buyOrderCode = null) {
+  async function startCheckout(planId, button, extendOrderCode = null, buyOrderCode = null, upgradeOrderCode = null) {
     button.disabled = true;
     try {
       const res = await fetch('/api/rent/checkout', {
@@ -3022,9 +3154,10 @@ const rentalGame = GAMES[DEFAULT_GAME];
           planId,
           // Only a plain rental has a quantity; extending or buying acts on one
           // existing rental, and the server rejects a count there.
-          ...(extendOrderCode || buyOrderCode ? {} : { quantity: quantityFor(planId) }),
+          ...(extendOrderCode || buyOrderCode || upgradeOrderCode ? {} : { quantity: quantityFor(planId) }),
           ...(extendOrderCode ? { extendOrderCode } : {}),
           ...(buyOrderCode ? { buyOrderCode } : {}),
+          ...(upgradeOrderCode ? { upgradeOrderCode } : {}),
         }),
       });
       const data = await res.json();
@@ -3051,6 +3184,18 @@ const rentalGame = GAMES[DEFAULT_GAME];
       } else if (data.error === 'out_of_stock') {
         rentNotice('Vừa hết tài khoản trống. Vui lòng quay lại sau.', true);
         await loadStock();
+      } else if (data.error === 'upgrade_not_allowed') {
+        // The ladder is server-side, so this only happens if the page is stale —
+        // most likely the rental was already upgraded in another tab.
+        rentNotice('Gói này không thể nâng cấp sang gói đã chọn. Đang tải lại đơn của bạn…', true);
+        await loadRentals();
+      } else if (data.error === 'upgrade_not_payable') {
+        rentNotice('Chênh lệch giá của gói này đang không hợp lệ. Ae liên hệ shop qua Zalo/Facebook nhé.', true);
+      } else if (data.error === 'not_for_sale') {
+        // The button is hidden on these accounts, so this only happens if the tag
+        // was removed while the page sat open. Refresh so it disappears.
+        rentNotice('Tài khoản này hiện không bán. Ae liên hệ shop qua Zalo/Facebook nhé.', true);
+        await loadRentals();
       } else if (data.error === 'unauthorized') {
         rentNotice('Phiên đăng nhập đã hết. Vui lòng đăng nhập lại.', true);
       } else if (data.merchantConfig) {

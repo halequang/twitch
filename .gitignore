@@ -10,6 +10,8 @@ pending-images
 .cf-bootstrap
 .env
 .env.local
+# Deploy token for scripts/deploy.sh (.env.deploy.example is the committed stub).
+.env.deploy
 
 # Plaintext Steam credentials for the rental pool — never commit these.
 # Unanchored on purpose: a copy saved to the repo root slipped past the old

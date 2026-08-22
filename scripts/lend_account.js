@@ -13,7 +13,7 @@
 //           account state against the pre-loan snapshot
 //
 // Usage:
-//   node scripts/check-account-bans.mjs --remote --login Ot2Zp7Hp8Vc0 --include-rented
+//
 //   node lend_account.js check  <account> [--password=<pw>]
 //   node lend_account.js lend   <account> --to="friend" [--days=1] [--note="..."]
 //   node lend_account.js list   [--all]

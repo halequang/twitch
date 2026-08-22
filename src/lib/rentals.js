@@ -17,11 +17,16 @@
 import {
   DEFAULT_GAME,
   GAMES,
+  TAG_SEPARATORS,
+  accountMeetsPlanTags,
   findPlan,
   purchasePlan,
+  saleAllowed,
   tagsBarredFrom,
   tagsPreferredBy,
   tagsRequiredBy,
+  upgradeAllowed,
+  upgradesFrom,
 } from '../data/rental-plans.js';
 import { hasGuardFlag } from './steamcode.js';
 import {
@@ -171,11 +176,11 @@ export async function sweepExpiredRentals(db) {
 // separators become spaces and the note is padded, turning "a · no_ban" into
 // " a no_ban " so '% no_ban %' hits while "no_ban_check" does not. A substring
 // match would quietly restrict accounts nobody meant to restrict.
-// Anything that is punctuation around a word rather than part of one. Built as a
-// list because a hand-nested REPLACE chain is where the first version went wrong:
-// it stopped at "· , ; |", so a note reading "(day 2, no_ban)" was NOT restricted —
-// the closing bracket sat against the tag and the token never matched.
-const TAG_SEPARATORS = ['·', ',', ';', '|', '(', ')', '[', ']', '{', '}', '/', '\\', '"', "'", '\t', '\n', '\r'];
+// The separator list — anything that is punctuation around a word rather than part
+// of one — lives in data/rental-plans.js beside noteHasTag(), which has to agree
+// with this SQL. It is a list because a hand-nested REPLACE chain is where the first
+// version went wrong: it stopped at "· , ; |", so a note reading "(day 2, no_ban)"
+// was NOT restricted — the closing bracket sat against the tag and it never matched.
 
 const sqlChar = (ch) => `'${ch.replace(/'/g, "''")}'`;
 
@@ -367,19 +372,53 @@ export async function listPlans(env, game = DEFAULT_GAME, forEmail = null) {
   };
 }
 
+/* ─── upgrades ────────────────────────────────── */
+
+/**
+ * What moving a live rental onto a dearer plan costs, and how long it then runs.
+ *
+ * Money: the difference between the two shelf prices, and nothing else. A day
+ * upgraded to a week costs 50k − 20k = 30k, so the customer ends up having paid
+ * exactly the week's price for a week — which is the only rule that is obvious on
+ * the invoice and cannot be argued with. No credit for time already used, and no
+ * proration: those are the same number here, because the time is measured from the
+ * original start rather than from the moment they upgrade.
+ *
+ * Time: the new plan's full duration counted from when the rental began, never less
+ * than it already had. Upgrading a day-old rental to a week therefore leaves six
+ * days, not seven — they are buying "a week of access", not "a week starting now",
+ * and the price they paid is exactly a week's. The `Math.max` is the guard that
+ * makes it honest: a rental extended past that point keeps every hour it holds, so
+ * an upgrade can never take time away.
+ */
+function upgradeQuote(fromPlan, toPlan, parent, ts) {
+  const amount = toPlan.amount - fromPlan.amount;
+  // The rental's own clock started when it was paid for; created_at is the fallback
+  // for the rows old enough to predate paid_at being written.
+  const startedAt = parent.paid_at ?? parent.created_at ?? ts;
+  const held = parent.expires_at ?? ts;
+  return {
+    amount,
+    hours: toPlan.hours,
+    expiresAt: Math.max(held, startedAt + toPlan.hours * 3600),
+  };
+}
+
 /* ─── checkout ────────────────────────────────── */
 
 // payOS caps the description that reaches the bank transfer, and banks mangle
 // non-ASCII. Build the duration from `hours` rather than the Vietnamese label,
 // so "24 giờ" becomes "24h" instead of a truncated "24 gi".
-function shortDescription(plan, isExtension = false, count = 1) {
+function shortDescription(plan, isExtension = false, count = 1, isUpgrade = false) {
   // payOS caps this at 25 ASCII characters, hence the trimming rather than prose.
   if (plan.purchase) {
     return `Mua acc ${plan.gameName}`.replace(/[^\x20-\x7E]/g, '').slice(0, 25);
   }
   // Only collapse to days beyond one, so the "24 giờ" plan still reads "24h".
   const duration = plan.hours >= 48 && plan.hours % 24 === 0 ? `${plan.hours / 24}d` : `${plan.hours}h`;
-  const verb = isExtension ? 'Gia han' : 'Thue';
+  // "Nang cap" rather than "Gia han": the amount is a part-price, and a customer
+  // querying a 30k line on their statement needs to see which of the two it was.
+  const verb = isUpgrade ? 'Nang cap' : isExtension ? 'Gia han' : 'Thue';
   // The multiplier matters on a bank statement: "x3" is the difference between the
   // customer recognising the amount and disputing it.
   const times = count > 1 ? ` x${count}` : '';
@@ -391,8 +430,8 @@ async function insertOrder(db, order) {
   // caller retries with a fresh one.
   await db
     .prepare(
-      `INSERT INTO orders (order_code, user_key, user_email, game, plan_id, hours, amount, status, created_at, extends_order, batch_of)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
+      `INSERT INTO orders (order_code, user_key, user_email, game, plan_id, hours, amount, status, created_at, extends_order, batch_of, upgrades_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`
     )
     .bind(
       order.orderCode,
@@ -404,14 +443,15 @@ async function insertOrder(db, order) {
       order.amount,
       order.createdAt,
       order.extendsOrder ?? null,
-      order.batchOf ?? null
+      order.batchOf ?? null,
+      order.upgradesOrder ?? null
     )
     .run();
 }
 
 export async function createCheckout(
   env,
-  { user, gameId = DEFAULT_GAME, planId, origin, extendOrderCode, buyOrderCode, quantity }
+  { user, gameId = DEFAULT_GAME, planId, origin, extendOrderCode, buyOrderCode, upgradeOrderCode, quantity }
 ) {
   const plan = findPlan(gameId, planId);
   if (!plan) return { status: 400, body: { error: 'unknown_plan' } };
@@ -435,16 +475,24 @@ export async function createCheckout(
     return { status: 400, body: { error: 'purchase_needs_rental' } };
   }
 
-  if (count > 1 && (extendOrderCode != null || buyOrderCode != null)) {
-    // Both act on one specific existing rental, so a quantity has nothing to mean.
+  if (count > 1 && (extendOrderCode != null || buyOrderCode != null || upgradeOrderCode != null)) {
+    // Each acts on one specific existing rental, so a quantity has nothing to mean.
     return { status: 400, body: { error: 'quantity_not_supported_here' } };
+  }
+
+  // Two of these at once is a contradiction — an upgrade replaces the plan, an
+  // extension keeps it — and silently picking one would charge for the other.
+  if ([extendOrderCode, buyOrderCode, upgradeOrderCode].filter((c) => c != null).length > 1) {
+    return { status: 400, body: { error: 'conflicting_target' } };
   }
 
   // An extension tops up a rental the customer already holds and a purchase takes
   // it over outright. Both act on an existing order's account, so both reuse it and
   // must NOT be blocked by an empty pool.
-  const targetOrderCode = extendOrderCode ?? buyOrderCode;
+  const targetOrderCode = extendOrderCode ?? buyOrderCode ?? upgradeOrderCode;
   let parent = null;
+  // { quote, swapsAccount } once an upgrade has been validated; null otherwise.
+  let upgrade = null;
   if (targetOrderCode != null) {
     await sweepExpired(db);
     parent = await db
@@ -457,6 +505,55 @@ export async function createCheckout(
       return { status: 409, body: { error: 'not_extendable', status: parent.status } };
     }
     if (parent.account_id == null) return { status: 409, body: { error: 'no_account_yet' } };
+    // Only a no_ban account is for sale (SALE_REQUIRED_TAGS). listOrders already
+    // hides the button on the rest, but a hidden button is not a closed endpoint —
+    // and selling the wrong account is irreversible, since the buyer gets the
+    // mailbox. So the rule is enforced here too, before any money moves.
+    if (plan.purchase) {
+      const held = await db
+        .prepare(`SELECT internal_note FROM steam_accounts WHERE id = ?`)
+        .bind(parent.account_id)
+        .first();
+      if (!saleAllowed(held?.internal_note)) {
+        return { status: 409, body: { error: 'not_for_sale' } };
+      }
+    }
+
+    if (upgradeOrderCode != null) {
+      const fromPlan = findPlan(parent.game, parent.plan_id);
+      if (!fromPlan) return { status: 409, body: { error: 'unknown_parent_plan' } };
+      // The ladder is checked here and not only in the page: the page can be edited
+      // by whoever is reading it, and a request naming any pair of plans would
+      // otherwise be honoured — including a downgrade, which would charge a
+      // negative difference.
+      if (!upgradeAllowed(parent.plan_id, plan.id)) {
+        return {
+          status: 409,
+          body: { error: 'upgrade_not_allowed', from: parent.plan_id, to: plan.id, allowed: upgradesFrom(parent.plan_id) },
+        };
+      }
+      upgrade = { quote: upgradeQuote(fromPlan, plan, parent, now()), swapsAccount: false };
+      // Prices are edited by hand in rental-plans.js, so a pair that no longer has
+      // a gap between them would ask payOS to take 0đ — which it refuses with a
+      // less helpful message than this one.
+      if (upgrade.quote.amount <= 0) {
+        return { status: 409, body: { error: 'upgrade_not_payable', amount: upgrade.quote.amount } };
+      }
+
+      // The VOIP week can only be served by a vetted no_ban account, so a rental on
+      // an ordinary one has to move to a different login. Checked BEFORE the money
+      // moves: discovering it after payment leaves a customer paid-up on a plan the
+      // shop cannot serve, which is a refund conversation.
+      const held = await db
+        .prepare(`SELECT internal_note FROM steam_accounts WHERE id = ?`)
+        .bind(parent.account_id)
+        .first();
+      upgrade.swapsAccount = !accountMeetsPlanTags(held?.internal_note, plan.id);
+      if (upgrade.swapsAccount) {
+        const available = await stockByGame(db, parent.game, user?.email ?? null, plan.id);
+        if (available < 1) return { status: 409, body: { error: 'out_of_stock', available, wanted: 1 } };
+      }
+    }
     gameId = parent.game;
   } else {
     const available = await stockByGame(db, gameId, user?.email ?? null, plan.id);
@@ -478,15 +575,20 @@ export async function createCheckout(
   const buyPlanId = purchasePlan(gameId)?.id ?? null;
   const kindClause = plan.purchase ? 'AND plan_id = ?' : buyPlanId ? 'AND plan_id <> ?' : '';
   const kindBind = plan.purchase ? [plan.id] : buyPlanId ? [buyPlanId] : [];
+  // An upgrade and an extension of the same rental both point at it through
+  // extends_order, so without this they would share one slot — and the customer
+  // clicking "nâng cấp" after opening an extension would be handed back the
+  // extension's link, paying the wrong amount for the wrong thing.
   const pending = await db
     .prepare(
       `SELECT order_code, checkout_url FROM orders
         WHERE user_key = ? AND status = 'pending' AND created_at > ?
           AND batch_of IS NULL
           AND COALESCE(extends_order, 0) = COALESCE(?, 0)
+          AND COALESCE(upgrades_order, 0) = COALESCE(?, 0)
           ${kindClause}`
     )
-    .bind(key, now() - 60 * 30, parent ? parent.order_code : null, ...kindBind)
+    .bind(key, now() - 60 * 30, parent ? parent.order_code : null, upgradeOrderCode ?? null, ...kindBind)
     .first();
   if (pending?.checkout_url) {
     return {
@@ -499,6 +601,10 @@ export async function createCheckout(
       },
     };
   }
+
+  // What this payment actually charges. Every plan is billed at its shelf price
+  // except an upgrade, which is billed the gap between two of them.
+  const unitAmount = upgrade ? upgrade.quote.amount : plan.amount;
 
   // order_code is the primary key. Two checkouts in the same second collide, so
   // walk forward until one sticks.
@@ -513,9 +619,12 @@ export async function createCheckout(
         game: gameId,
         planId: plan.id,
         hours: plan.hours,
-        amount: plan.amount,
+        amount: unitAmount,
         createdAt: now(),
         extendsOrder: parent ? parent.order_code : null,
+        // Set on an upgrade only, and alongside extends_order rather than instead
+        // of it — see migrations/0013_order_upgrade.sql.
+        upgradesOrder: upgrade ? parent.order_code : null,
       });
       break;
     } catch (err) {
@@ -561,14 +670,14 @@ export async function createCheckout(
   try {
     link = await createPaymentLink(env, {
       orderCode,
-      amount: plan.amount * count,
-      description: shortDescription(plan, Boolean(parent), count),
+      amount: unitAmount * count,
+      description: shortDescription(plan, Boolean(parent), count, Boolean(upgrade)),
       returnUrl: `${origin}${pagePath}?rent=success&orderCode=${orderCode}`,
       cancelUrl: `${origin}${pagePath}?rent=cancel&orderCode=${orderCode}`,
       expiredAt: now() + 60 * 15,
       // Shown as a line item on the payOS-hosted page. The total must match
       // `amount`, so keep it a single row priced at the full amount.
-      items: [{ name: `${plan.gameName} - ${plan.label}`, quantity: count, price: plan.amount }],
+      items: [{ name: `${plan.gameName} - ${plan.label}`, quantity: count, price: unitAmount }],
       buyerEmail: user.email ?? undefined,
     });
   } catch (err) {
@@ -598,7 +707,7 @@ export async function createCheckout(
       checkoutUrl: link.checkoutUrl,
       orderCode,
       quantity: count,
-      amount: plan.amount * count,
+      amount: unitAmount * count,
       // Whether payOS will actually serve the in-page form for this merchant.
       embedded: await embeddedCheckoutAvailable(link.checkoutUrl),
     },
@@ -649,7 +758,10 @@ async function fulfilSingle(env, orderCode) {
     order.status === 'active' ||
     order.status === 'expired' ||
     order.status === 'extended' ||
-    order.status === 'sold'
+    order.status === 'sold' ||
+    // The rental this one was moved off. It was paid for, so a redelivered webhook
+    // naming it must not fall through to the claim path and take a second account.
+    order.status === 'upgraded'
   ) {
     return { ok: true, order };
   }
@@ -657,6 +769,10 @@ async function fulfilSingle(env, orderCode) {
   // A purchase also points at a parent order, so it must be checked before the
   // extension branch or a buy-out would top up a rental instead of ending it.
   if (findPlan(order.game, order.plan_id)?.purchase) return fulfilPurchase(env, order);
+  // Likewise an upgrade: it carries extends_order too, and falling through would
+  // add a week's hours to the old plan instead of moving the rental onto the new
+  // one — for the price of the difference.
+  if (order.upgrades_order != null) return fulfilUpgrade(env, order);
   if (order.extends_order != null) return fulfilExtension(env, order);
 
   await sweepExpired(db);
@@ -741,6 +857,131 @@ async function fulfilPurchase(env, order) {
   ]);
 
   return { ok: true, order: { ...order, status: 'active', account_id: accountId }, purchased: true };
+}
+
+/**
+ * Applies a paid upgrade: the child order becomes the rental, on the new plan, and
+ * the parent closes as 'upgraded'.
+ *
+ * The child has to be the surviving row because plan_id lives on the order, and
+ * plan_id is what the page, the perks box, the admin list and the allocator all
+ * read. Leaving the parent active would show a customer who just paid for the VOIP
+ * week a rental still labelled "1 ngày", and would hand the next extension the old
+ * plan's rules.
+ *
+ * The account moves only when it has to. A plan with no tag requirement is served
+ * by the login the customer already has — same credentials, nothing to re-do. The
+ * VOIP week requires a vetted no_ban account, so a rental on an ordinary one is
+ * given a different login here, and the old account goes back to the pool.
+ *
+ * Deliberately does NOT sweep first, for the same reason fulfilExtension does not:
+ * a sweep would expire the parent and free its account moments before we take it
+ * over.
+ */
+async function fulfilUpgrade(env, order) {
+  const db = env.DB;
+  const ts = now();
+
+  const parent = await db
+    .prepare(`SELECT * FROM orders WHERE order_code = ?`)
+    .bind(order.upgrades_order)
+    .first();
+
+  const stall = async (reason) => {
+    await db
+      .prepare(`UPDATE orders SET status = 'awaiting_stock', paid_at = COALESCE(paid_at, ?) WHERE order_code = ?`)
+      .bind(ts, order.order_code)
+      .run();
+    return { ok: false, reason };
+  };
+
+  if (!parent || parent.user_key !== order.user_key) return stall('unknown_parent');
+  if (parent.account_id == null) return stall('parent_has_no_account');
+
+  const toPlan = findPlan(order.game, order.plan_id);
+  const fromPlan = findPlan(parent.game, parent.plan_id);
+  if (!toPlan || !fromPlan) return stall('unknown_plan');
+
+  // Re-derived here rather than trusted from checkout: the row has been sitting in
+  // 'pending' while the customer paid, and the rental may have been extended in the
+  // meantime. Recomputing means the Math.max in upgradeQuote sees the expiry as it
+  // is now, so an extension bought mid-payment is not silently swallowed.
+  const { expiresAt } = upgradeQuote(fromPlan, toPlan, parent, ts);
+
+  const heldAccount = await db
+    .prepare(`SELECT id, internal_note FROM steam_accounts WHERE id = ?`)
+    .bind(parent.account_id)
+    .first();
+
+  let accountId = parent.account_id;
+  let swapped = null;
+
+  const keepsAccount = accountMeetsPlanTags(heldAccount?.internal_note, toPlan.id);
+
+  // The parent may have lapsed while the payment settled, in which case the sweep
+  // has already handed its account back to the pool. Take it back before building
+  // the rental on top of it — without this, an upgrade paid a minute after expiry
+  // could be handed an account somebody else has since been given. Only matters
+  // when the login is being kept; a swap is getting a different one anyway.
+  //
+  // The same reclaim fulfilExtension does, and for the same reason.
+  if (keepsAccount && parent.status !== 'active') {
+    const reclaimed = await db
+      .prepare(
+        `UPDATE steam_accounts SET status = 'rented'
+          WHERE id = ? AND status = 'available'
+          RETURNING id`
+      )
+      .bind(parent.account_id)
+      .first();
+    if (!reclaimed) return stall('account_taken');
+    accountId = reclaimed.id;
+  }
+
+  if (!keepsAccount) {
+    // Claim first, release second. The other order would leave the customer with no
+    // account at all for as long as the claim takes, and if the claim then failed
+    // they would have paid to lose their rental.
+    const claimed = await claimAccount(db, order.game, order.user_email ?? null, toPlan.id);
+    // Paid, but nothing eligible left — checkout checked the stock, so this is the
+    // narrow race where the last one went to somebody else between the two moments.
+    // The customer keeps the account and the plan they already had; a human refunds
+    // or finds a login, which is the same handling every other out-of-stock payment
+    // gets.
+    if (!claimed) return stall('out_of_stock');
+    swapped = { from: parent.account_id, to: claimed };
+    accountId = claimed;
+  }
+
+  const writes = [
+    // The upgrade becomes the live rental.
+    db
+      .prepare(
+        `UPDATE orders SET status = 'active', paid_at = COALESCE(paid_at, ?), account_id = ?, expires_at = ?
+          WHERE order_code = ?`
+      )
+      .bind(ts, accountId, expiresAt, order.order_code),
+    // ...and the rental it replaces stops being one. expires_at goes NULL, the same
+    // as a sold parent: the sweep, the reminders and the stock forecast all filter
+    // on `expires_at IS NOT NULL`, so a cleared expiry drops out of every one of
+    // them rather than firing later and handing the new rental's account back to
+    // the pool.
+    db
+      .prepare(`UPDATE orders SET status = 'upgraded', expires_at = NULL WHERE order_code = ?`)
+      .bind(parent.order_code),
+  ];
+  if (swapped) {
+    // Freed only after the new one is held, and only if this rental is still what
+    // is on it — an account already re-let to somebody else must not be touched.
+    writes.push(
+      db
+        .prepare(`UPDATE steam_accounts SET status = 'available' WHERE id = ? AND status = 'rented'`)
+        .bind(swapped.from)
+    );
+  }
+  await db.batch(writes);
+
+  return { ok: true, order: { ...order, status: 'active', account_id: accountId }, expiresAt, swapped };
 }
 
 /**
@@ -852,6 +1093,47 @@ async function reconcilePending(env, orders) {
 
 /* ─── reading a user's rentals ────────────────── */
 
+/**
+ * The upgrade buttons to show on one live rental.
+ *
+ * Everything here is decided server-side because the page cannot know any of it:
+ * the price is a difference between two plans, whether the login changes depends on
+ * the tags of the account this customer is holding, and whether the move is
+ * possible at all depends on stock the page never sees. Sending a ready-made list
+ * also means the page cannot offer a move the checkout would refuse.
+ */
+async function upgradeOffers(db, order, account, forEmail) {
+  const fromPlan = findPlan(order.game, order.plan_id);
+  if (!fromPlan) return [];
+  const ts = now();
+
+  const offers = [];
+  for (const toPlanId of upgradesFrom(order.plan_id)) {
+    const toPlan = findPlan(order.game, toPlanId);
+    if (!toPlan) continue;
+    const quote = upgradeQuote(fromPlan, toPlan, order, ts);
+    // A pair with no gap between its prices cannot be charged; checkout refuses it
+    // too, so it is left out rather than shown as a 0đ button.
+    if (quote.amount <= 0) continue;
+    const swapsAccount = !accountMeetsPlanTags(account.internal_note, toPlanId);
+    offers.push({
+      id: toPlan.id,
+      label: toPlan.label,
+      icon: toPlan.icon ?? null,
+      perks: toPlan.perks ?? null,
+      // The charge, not the plan's shelf price — that is the whole point.
+      amount: quote.amount,
+      fullAmount: toPlan.amount,
+      expiresAt: quote.expiresAt,
+      swapsAccount,
+      // Only asked when a swap is needed: the answer is otherwise irrelevant, and
+      // it is a query per plan per rental.
+      available: swapsAccount ? (await countStock(db, order.game, forEmail, toPlanId)) > 0 : true,
+    });
+  }
+  return offers;
+}
+
 export async function listOrders(env, user) {
   const db = env.DB;
   await sweepExpired(db);
@@ -882,10 +1164,16 @@ export async function listOrders(env, user) {
       amount: order.amount,
       status: order.status,
       extendsOrder: order.extends_order ?? null,
+      // An upgrade carries both; this is what makes it distinguishable from an
+      // extension, in the page as well as in fulfilment.
+      upgradesOrder: order.upgrades_order ?? null,
       checkoutUrl: order.status === 'pending' ? order.checkout_url : null,
       createdAt: order.created_at,
       expiresAt: order.expires_at,
       purchase: Boolean(findPlan(order.game, order.plan_id)?.purchase),
+      // Both set below, once the account behind a live rental is known.
+      forSale: false,
+      upgrades: [],
       credentials: null,
     };
 
@@ -910,6 +1198,16 @@ export async function listOrders(env, user) {
           // holds things like red_flag and prices. This only says whether the page
           // should offer the "get my Guard code" button.
           entry.guardCode = hasGuardFlag(account.note, account.internal_note);
+          // Likewise a boolean, not the note: whether the buy-out button belongs on
+          // this rental at all. Only a vetted no_ban account is for sale, so the
+          // page leaves the button off the rest instead of offering a 190k
+          // purchase that createCheckout would then refuse.
+          entry.forSale = saleAllowed(account.internal_note);
+          // What this rental can be moved up to, priced and stock-checked per
+          // rental rather than per plan: the difference depends on what they are
+          // on now, and whether a login has to change depends on the account they
+          // happen to be holding.
+          entry.upgrades = await upgradeOffers(db, order, account, user?.email ?? null);
           // The mailbox is withheld from renters by default: whoever holds it can
           // reset the Steam password and keep the account for good. For a BUYER
           // that is precisely the point — and it is what makes buying fix the

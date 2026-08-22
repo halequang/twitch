@@ -44,11 +44,62 @@ npm run wrangler:dev   # Run Cloudflare Worker against built ./dist (port 8788)
 ## Deploy
 
 ```bash
-npm run deploy          # astro build && npm run migrate && wrangler deploy
+npm run deploy          # scripts/deploy.sh: build → migrate → wrangler deploy
 npm run migrate         # apply outstanding migrations to production
 npm run migrate:local   # ...to the local dev DB
 npm run migrate:list    # what is outstanding, without applying it
 ```
+
+### Deploy credentials (API token)
+
+Deploying authenticates with an API token, not `wrangler login`. Put it in a
+gitignored `.env.deploy` at the repo root — copy `.env.deploy.example` — and
+`scripts/deploy.sh` exports it before running anything:
+
+```
+CLOUDFLARE_API_TOKEN=your-deploy-token-here
+CLOUDFLARE_ACCOUNT_ID=9a0bdae942498efd47e7c1337b0d964f
+```
+
+Create it at dashboard → My Profile → API Tokens → Create Token → **Create Custom
+Token**, with account resources set to the account above and zone resources to
+`fungamingvn.shop`:
+
+| Permission | Why |
+| ---------- | --- |
+| Account · Workers Scripts · Edit | the worker, its `[assets]` and the cron trigger |
+| Account · D1 · Edit | `wrangler d1 migrations apply --remote` |
+| Zone · Workers Routes · Edit | the two `fungamingvn.shop` routes |
+| Zone · Zone · Read | resolves `zone_name` in `wrangler.toml` to a zone id |
+
+`npm run deploy:check` probes each of those four endpoints and names whichever one
+the token cannot reach. Worth running first, because Cloudflare's own error does not
+say what is wrong: a token with no D1 grant fails the deploy with *"The given account
+is not valid or is not authorized to access this service [code: 7403]"*, which reads
+like a wrong account id and is not one. The usual cause is a custom token created
+with zone rows only — the account-level rows also need **Account Resources** set to
+include the account, or Workers Scripts and D1 are both silently absent.
+
+The scripts that read production D1 (`check-account-bans.mjs`,
+`add-rental-account.mjs`, `create-user.mjs`, `send-expiry-reminders.mjs`) load the
+same file through `scripts/_cfenv.mjs`, so `--remote` works without sourcing
+anything first. Skip that and the wrangler child process inherits an environment
+with no token, falls back to the OAuth session, and dies on *"Failed to fetch auth
+token: 400 Bad Request"* — an auth error that says nothing about the token being
+absent.
+
+**Why a second token file rather than reusing `.env`.** That one holds an R2-only
+token for `scripts/upload-images.sh`. Export it and wrangler authenticates as
+R2-only, so the deploy dies on the first D1 call — and `wrangler login` will not run
+either, since *any* `CLOUDFLARE_API_TOKEN` looks to it like you are already logged
+in (`You are logged in with an API Token. Unset the CLOUDFLARE_API_TOKEN…`). The
+deploy script loading `.env.deploy` last is what keeps the two from fighting; the
+guard fires before the build rather than after it, so a missing token costs nothing.
+
+`scripts/create-cf-token.mjs` mints a token over the API instead of the dashboard,
+but it needs a working Global API Key in `.cf-bootstrap`; the one there now is
+malformed and Cloudflare rejects it, so the dashboard is the route until it is
+replaced.
 
 Migrations run **before** the Worker goes out, so new code never meets an old
 schema, and the steps are chained with `&&` — a failed migration aborts the deploy
@@ -380,11 +431,18 @@ internal_note: "no_ban_check pending"    →  ordinary account, no restriction
   plan, and the page disables just that card ("Tạm hết") instead of every button.
   The headline figure is the best any single plan can do, so "hết tài khoản" only
   appears when every plan is empty.
-- **Buying is unaffected.** `isle-buy` is nominally barred from the tag, but a
-  purchase acts on the account the customer already holds rather than claiming a
-  new one — so a VOIP renter can still buy their `no_ban` account. There is a test
-  for exactly that, since the renter most likely to buy would otherwise be the one
-  person who could not.
+- **Buying requires the tag.** Only a `no_ban` account is for sale: selling hands
+  over the mailbox, so it is final, and the vetted accounts are the only ones worth
+  parting with. `SALE_REQUIRED_TAGS` in `src/data/rental-plans.js` holds the rule.
+  A purchase acts on the account the customer already holds rather than claiming a
+  new one, so it never goes through the allocator `TAG_ONLY_PLANS` filters — hence
+  the separate list. The renter of a VOIP week is therefore the one who can buy,
+  which is the same person the tag was held back for.
+- **The button is hidden, not just refused.** `/api/rent/orders` returns `forSale`
+  per rental — a boolean, never the note text — and the page leaves "Mua acc này"
+  off the accounts that are not for sale instead of offering a 190k purchase that
+  checkout would decline. `createCheckout` still enforces it (`not_for_sale`), since
+  a hidden button is not a closed endpoint.
 
 To apply it to accounts you already have:
 
@@ -393,6 +451,39 @@ UPDATE steam_accounts
    SET internal_note = TRIM(COALESCE(internal_note || ' · ', '') || 'no_ban')
  WHERE login IN ('...');
 ```
+
+### Moving a rental onto a better plan (upgrade)
+
+A running rental can be moved up the ladder in `PLAN_UPGRADES`
+(`src/data/rental-plans.js`): the day plan to either week, the plain week to the
+VOIP week. Downgrades are absent on purpose — they would owe money back, which
+payOS cannot do from here.
+
+- **The charge is the difference between the two shelf prices**, and nothing else.
+  A day upgraded to a week costs 50k − 20k = 30k, so the customer ends up having
+  paid exactly the week's price for a week. It is the only rule that is obvious on
+  an invoice, and it needs no proration argument.
+- **The new duration runs from when the rental began**, never less than it already
+  had. Upgrading a day-old rental to a week leaves six days, not seven: they bought
+  "a week of access", not "a week starting now", and 30k + 20k is a week's price. The
+  `Math.max` in `upgradeQuote` is what keeps it honest — a rental extended past that
+  point keeps every hour, so an upgrade can never take time away.
+- **The login changes only when it has to.** The VOIP week requires a vetted
+  `no_ban` account (`PLAN_REQUIRED_TAGS`), so a rental on an ordinary one is given a
+  different account and the old one goes back to the pool; a move with no tag
+  requirement keeps the same credentials. The page says which will happen *before*
+  the customer pays, and stock is checked before the money moves — discovering it
+  afterwards is a refund conversation.
+- **The upgrade order becomes the rental.** `plan_id` lives on the order row and is
+  what the page, the perks box, the admin list and the allocator all read, so the
+  child carries the new plan and the parent closes as `upgraded` with a NULL expiry.
+  Leaving the parent active would show a customer who just paid for VOIP a rental
+  still labelled "1 ngày".
+- **An upgrade is marked by `upgrades_order`, not inferred.** It sets
+  `extends_order` too — that is what keeps the extension guards working — and the
+  two cannot be told apart by plan or amount, because extending a 1-day rental by a
+  week is a legitimate extension whose plan differs from its parent's. Needs
+  `migrations/0013_order_upgrade.sql`, which `npm run deploy` applies first.
 
 ### Holding an account for one customer
 
@@ -1056,6 +1147,11 @@ with **R2 Storage: Edit** permission on the account above. The `set -a; . ./.env
 prefix exports these into the environment so wrangler authenticates with the token
 (which overrides any `wrangler login` session). A `403 / Authentication error` means
 either the token lacks R2 scope or belongs to the wrong account.
+
+This token is for uploads only — deploying needs the wider one in `.env.deploy`
+(see [Deploy credentials](#deploy-credentials-api-token)). Keep them in separate
+files: whichever was exported last wins, and an R2-only token in the environment is
+exactly what makes a deploy fail.
 
 ## Customising the worker
 

@@ -72,7 +72,7 @@ export const GAMES = {
       // No duration. A purchase never expires, and hours: 0 keeps the orders
       // table's NOT NULL column honest rather than inventing a fake period.
       hours: 0,
-      amount: 190000,
+      amount: 220000,
       purchase: true,
       note: 'Sở hữu vĩnh viễn · bàn giao cả email',
     },
@@ -130,6 +130,91 @@ export function tagsPreferredBy(planId) {
   return Object.entries(TAG_ONLY_PLANS)
     .filter(([, plans]) => plans.includes(planId))
     .map(([tag]) => tag);
+}
+
+/**
+ * Punctuation that separates a tag from the words around it in the free-text
+ * internal_note. Lives here rather than in lib/rentals.js because both the SQL
+ * builder and noteHasTag() below read from it: the note "(day 2, no_ban)" must not
+ * count as tagged in one place and untagged in the other.
+ */
+export const TAG_SEPARATORS = ['·', ',', ';', '|', '(', ')', '[', ']', '{', '}', '/', '\\', '"', "'", '\t', '\n', '\r'];
+
+/**
+ * Whole-token tag test — the JS twin of tagMatch() in lib/rentals.js, for the
+ * places that already hold the note in hand and would otherwise re-query D1.
+ *
+ * Separators become spaces and the note is padded, so "bought day 2 · no_ban"
+ * matches while "no_ban_check" and "no_bans" — different words — do not. Case is
+ * folded to match SQLite's LIKE, which ignores it for ASCII.
+ */
+export function noteHasTag(note, tag) {
+  const separators = new Set(TAG_SEPARATORS);
+  const normalised = Array.from(String(note ?? '').toLowerCase(), (ch) =>
+    separators.has(ch) ? ' ' : ch
+  ).join('');
+  return ` ${normalised} `.includes(` ${String(tag).toLowerCase()} `);
+}
+
+/**
+ * Tags an account must carry before the buy-out is offered on it.
+ *
+ * Selling is final in a way renting is not — the customer gets the mailbox, so the
+ * account is gone from the pool for good. Only the accounts already vetted as
+ * never-banned are worth parting with; the rest stay rental stock, and the
+ * "Mua acc này" button is left off them entirely rather than shown and then
+ * refused at checkout.
+ *
+ * This is a separate list from PLAN_REQUIRED_TAGS on purpose: a purchase takes over
+ * the account the customer already holds instead of claiming one from the pool, so
+ * it never goes through the allocator those tags filter.
+ */
+export const SALE_REQUIRED_TAGS = ['no_ban'];
+
+/** Whether this account may be sold outright, judged from its internal_note. */
+export function saleAllowed(internalNote) {
+  return SALE_REQUIRED_TAGS.every((tag) => noteHasTag(internalNote, tag));
+}
+
+/**
+ * Where a rental can move once it is running: cheaper plan → dearer plan, never
+ * the other way.
+ *
+ * Written out rather than derived from price, because "dearer" is not the same
+ * question as "a sensible upgrade". Both weeks cost more than the day, so both are
+ * offered to it; the VOIP week costs more than the plain week, so the plain week is
+ * offered it. Nothing is offered to the VOIP week — it is the top of the ladder —
+ * and a downgrade is absent on purpose: it would owe the customer money back, which
+ * payOS cannot do from here.
+ *
+ * Keys and values are plan ids, so a plan renamed here must be renamed in `plans`
+ * above too; ids are stable once real orders exist, which is what makes that safe.
+ */
+export const PLAN_UPGRADES = {
+  'isle-1d': ['isle-7d', 'isle-7d-voip'],
+  'isle-7d': ['isle-7d-voip'],
+};
+
+/** The plans this one can be moved up to. */
+export function upgradesFrom(planId) {
+  return PLAN_UPGRADES[planId] ?? [];
+}
+
+/** Whether this exact move is allowed. Checked server-side on every checkout. */
+export function upgradeAllowed(fromPlanId, toPlanId) {
+  return upgradesFrom(fromPlanId).includes(toPlanId);
+}
+
+/**
+ * Whether the account a customer is already holding can carry this plan.
+ *
+ * Only REQUIRED tags count. A barred tag is not asked about on purpose: barring
+ * exists to stop a good account being *spent* on a cheap plan, and it is no reason
+ * to take one away from somebody who already has it — the same reasoning that lets
+ * a VOIP renter buy the no_ban account they hold.
+ */
+export function accountMeetsPlanTags(internalNote, planId) {
+  return tagsRequiredBy(planId).every((tag) => noteHasTag(internalNote, tag));
 }
 
 export const DEFAULT_GAME = 'the-isle';

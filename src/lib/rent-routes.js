@@ -51,6 +51,8 @@ export async function handleRentRequest({ path, method, body, cookie, origin, en
         // new account. Ownership is verified server-side.
         extendOrderCode: body?.extendOrderCode,
         buyOrderCode: body?.buyOrderCode,
+        // Move that rental onto a dearer plan, charging the difference.
+        upgradeOrderCode: body?.upgradeOrderCode,
         // How many accounts to rent in this one payment (1..10).
         quantity: body?.quantity,
       });

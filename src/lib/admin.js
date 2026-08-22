@@ -116,6 +116,9 @@ const ORDER_STATUS_FILTERS = [
   'pending',
   'active',
   'extended',
+  // The rental a paid upgrade replaced. Filterable for the same reason 'extended'
+  // is: it is a real paid row, and an admin looking for it must be able to.
+  'upgraded',
   'expired',
   'cancelled',
   'payment_expired',

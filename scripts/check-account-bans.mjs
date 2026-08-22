@@ -3,6 +3,13 @@
  * Checks every rental account for bans: VAC, developer game bans, trade/market
  * standing, community ban, Steam Support lock, and the "limited account" flag.
  *
+ * It also reports each account's mailbox, because that is the other way an account
+ * stops being rentable and no ban source mentions it: Guard codes land there, and
+ * whoever holds the address can reset the password and keep the account. Any run
+ * that logs in compares the address Steam has against the one in the database — a
+ * difference means somebody changed it. Exit status is non-zero for that as well as
+ * for a ban.
+ *
  * Two ways to learn an account's standing, and this uses whichever is cheapest:
  *
  *   1. GetPlayerBans — a public HTTP call, no login, safe to run on an account a
@@ -20,6 +27,7 @@
  * steam_change_password.py follows.
  *
  * Usage:
+ *   node scripts/check-account-bans.mjs --remote --login Ot2Zp7Hp8Vc0 --include-rented
  *   node scripts/check-account-bans.mjs --remote                 # check production
  *   node scripts/check-account-bans.mjs --remote --no-login      # only known steam_ids
  *   node scripts/check-account-bans.mjs --remote --login <name>  # one account
@@ -36,6 +44,8 @@
  *   --limit <n>       stop after n logins (default 10, so a first run is bounded)
  *   --timeout <s>     per-login timeout in seconds (default 45)
  *   --dry-run         do not write steam_id / ban_state back
+ *   --full-emails     print mailbox addresses in full instead of masked. Masking is
+ *                     the default because this output gets pasted into chats
  *
  * Env (from the environment, or .dev.vars):
  *   ACCOUNT_ENC_KEY  required to decrypt the stored Steam passwords
@@ -50,10 +60,16 @@
  * account is reported as `guard_required` and left for a targeted run.
  */
 
+// Puts CLOUDFLARE_API_TOKEN into the environment so a `--remote` run authenticates
+// with the deploy token instead of falling back to the OAuth session.
+import './_cfenv.mjs';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { webcrypto as crypto } from 'node:crypto';
 import { createRequire } from 'node:module';
+// The one list of domains the code relay can actually read, so this report and
+// /api/rent/steam-code cannot drift apart.
+import { mailboxReadable } from '../src/lib/steamcode.js';
 
 const require = createRequire(import.meta.url);
 const SteamUser = require('steam-user');
@@ -63,13 +79,14 @@ const DB_NAME = 'fungaming-rentals';
 /* ─── config ──────────────────────────────────── */
 
 function parseArgs(argv) {
-  const out = { remote: false, dryRun: false, noLogin: false, includeRented: false, limit: 10, timeout: 45 };
+  const out = { remote: false, dryRun: false, noLogin: false, includeRented: false, fullEmails: false, limit: 10, timeout: 45 };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--remote') out.remote = true;
     else if (a === '--dry-run') out.dryRun = true;
     else if (a === '--no-login') out.noLogin = true;
     else if (a === '--include-rented') out.includeRented = true;
+    else if (a === '--full-emails') out.fullEmails = true;
     else if (a === '--relogin') out.relogin = true;
     else if (a.startsWith('--')) out[a.slice(2)] = argv[++i];
   }
@@ -193,7 +210,10 @@ async function fetchPlayerBans(steamIds, apiKey) {
 function probeAccount(login, password, timeoutMs) {
   return new Promise((resolve) => {
     const client = new SteamUser({ autoRelogin: false });
-    const out = { ok: false, steamId: null, limitations: null, vacBans: null, vacApps: null, reason: null };
+    const out = {
+    ok: false, steamId: null, limitations: null, vacBans: null, vacApps: null,
+    email: null, emailValidated: null, reason: null,
+  };
     let done = false;
     let sawLogin = false;
 
@@ -260,6 +280,18 @@ function probeAccount(login, password, timeoutMs) {
     client.on('vacBans', (numBans, appids) => {
       out.vacBans = numBans ?? 0;
       out.vacApps = (appids || []).join(', ') || null;
+    });
+
+    // The mailbox Steam itself believes the account has. Worth reading on the way
+    // past: if it no longer matches the address in D1, somebody changed it, and
+    // that is a takeover — which no ban source would ever report.
+    //
+    // Deliberately does NOT call settle(). That grace window exists for the
+    // limitations push the verdict depends on, and shortening it for a field the
+    // verdict does not use is how a verdict starts flipping between runs.
+    client.on('emailInfo', (address, validated) => {
+      out.email = address || null;
+      out.emailValidated = validated == null ? null : Boolean(validated);
     });
 
     client.logOn({ accountName: login, password });
@@ -392,6 +424,9 @@ if (!args.noLogin && encKey) {
       steamId: probe.steamId,
       flags,
       checked: conclusive,
+      // Only a login can report these; the HTTP pass leaves them null.
+      steamEmail: probe.email,
+      steamEmailValidated: probe.emailValidated,
       source: p
         ? probe.limitations
           ? 'ban api + login'
@@ -473,6 +508,79 @@ console.log(
     `${byState.clean.length} clean, ${byState.unknown.length} unknown.` +
     (args.dryRun ? '  (dry run — nothing written)' : '')
 );
+/* ─── mailboxes ───────────────────────────────── */
+
+// Reported beside the bans because the mailbox is what makes a rental account
+// recoverable: Guard codes land there, and whoever holds it can reset the password
+// and keep the account. Three things are worth knowing, and none of them is a ban:
+// whether the address on Steam still matches the one on record, whether Steam has
+// validated it, and whether the code relay can read it at all.
+//
+// Addresses are masked by default — this output gets pasted into chats — and
+// `--full-emails` prints them whole for when you need to act on one.
+function maskEmail(address) {
+  if (!address) return '—';
+  if (args.fullEmails) return address;
+  const [local, domain] = String(address).split('@');
+  if (!domain) return '***';
+  const head = local.slice(0, 2);
+  return `${head}${'*'.repeat(Math.max(3, local.length - head.length))}@${domain}`;
+}
+
+const same = (a, b) => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+
+const mailboxes = results.map((r) => {
+  const stored = r.account.email || null;
+  const onSteam = r.steamEmail || null;
+  return {
+    login: r.account.login,
+    stored,
+    onSteam,
+    validated: r.steamEmailValidated ?? null,
+    // Judged on the stored address, since that is the one the relay would query.
+    readable: stored ? mailboxReadable(stored) : null,
+    changed: Boolean(stored && onSteam && !same(stored, onSteam)),
+  };
+});
+
+const changed = mailboxes.filter((m) => m.changed);
+const unreadable = mailboxes.filter((m) => m.stored && !m.readable);
+const unrecorded = mailboxes.filter((m) => !m.stored);
+const unvalidated = mailboxes.filter((m) => m.validated === false);
+
+console.log(`\n=== Mailboxes (${where}) ===`);
+console.log(`   ${pad('LOGIN', 16)}${pad('EMAIL (D1)', 28)}${pad('STEAM SAYS', 28)}${pad('VALIDATED', 11)}RELAY`);
+for (const m of mailboxes) {
+  // Same marker column as the ban table above, so both scan the same way.
+  const mark = m.changed ? '!!' : !m.stored || m.validated === false ? ' !' : '  ';
+  const validated = m.validated == null ? '—' : m.validated ? 'yes' : 'NO';
+  const relay = m.readable == null ? '—' : m.readable ? 'readable' : 'not readable';
+  console.log(
+    `${mark} ${pad(m.login, 16)}${pad(maskEmail(m.stored), 28)}${pad(m.onSteam ? maskEmail(m.onSteam) : '—', 28)}` +
+      `${pad(validated, 11)}${relay}`
+  );
+}
+
+console.log(
+  `\nMailboxes: ${changed.length} changed on Steam, ${unreadable.length} the relay cannot read, ` +
+    `${unrecorded.length} with no address on record, ${unvalidated.length} unvalidated.` +
+    (args.fullEmails ? '' : '\n           (masked — pass --full-emails to print them in full)')
+);
+console.log(
+  '           A "—" under STEAM SAYS just means this run did not log in, so only\n' +
+    '           the stored address is known. --relogin re-checks those.'
+);
+
+if (changed.length) {
+  console.log('\nCHANGED MAILBOX — Steam has an address the database does not. Somebody edited');
+  console.log('the account, which is a takeover rather than a ban, and no ban source reports it:');
+  for (const m of changed) {
+    console.log(`  ${m.login}: on record ${maskEmail(m.stored)} → on Steam ${maskEmail(m.onSteam)}`);
+  }
+  console.log('  Rotate the password (scripts/steam_change_password.py) and keep them out of the');
+  console.log('  pool until the mailbox is yours again — the holder of that address can reset it back.');
+}
+
 if (byState.banned.length) {
   const ids = byState.banned.map((r) => Number(r.account.id)).join(',');
   const live = byState.banned.filter((r) => r.account.live > 0);
@@ -490,4 +598,6 @@ if (byState.banned.length) {
     );
   }
 }
-process.exit(byState.banned.length ? 1 : 0);
+// Non-zero for a ban OR a changed mailbox: both mean an account must not go back
+// out, and a caller checking the exit status should hear about either.
+process.exit(byState.banned.length || changed.length ? 1 : 0);
