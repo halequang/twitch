@@ -109,6 +109,9 @@ Environment:
                              with no DISPLAY, windowed everywhere else.
     CHROME_BINARY=/path      the browser to drive. Needed on ARM Linux, where no
                              Google Chrome build exists and Chromium is the option.
+    CHROMEDRIVER=/path       the driver to use, skipping the download. On Debian the
+                             chromium-driver package matches the chromium package,
+                             which is the pairing that actually works on ARM.
     python steam_change_password.py --db --remote --account egrot16122,ywhods4353
 """
 import json
@@ -903,7 +906,59 @@ def read_email_code(acc):
         return ""
 
 
+def _browser_version(binary):
+    """The version of the browser at `binary`, or "" — e.g. "151.0.7922.169"."""
+    try:
+        out = subprocess.run([binary, "--version"], capture_output=True, text=True,
+                             timeout=20).stdout
+    except Exception:
+        return ""
+    m = re.search(r"(\d+\.\d+\.\d+\.\d+)", out or "")
+    return m.group(1) if m else ""
+
+
 def _get_chrome_path():
+    """The chromedriver to drive the browser with.
+
+    Three ways, most explicit first:
+
+      1. CHROMEDRIVER=/usr/bin/chromedriver — use exactly that. On Debian/Ubuntu the
+         chromium-driver package is version-matched to the chromium package, which is
+         the only reliable pairing on ARM: webdriver-manager publishes builds per
+         Google Chrome release and Google ships no ARM Linux Chrome at all.
+      2. CHROME_BINARY set — ask for a driver matching THAT browser's version. Without
+         this, webdriver-manager fetches the newest driver and refuses to drive an
+         older browser: "only supports Chrome version 152 / current browser version
+         is 151".
+      3. Neither — newest driver, which is right when the browser is an
+         auto-updating Google Chrome.
+    """
+    explicit = os.environ.get("CHROMEDRIVER", "").strip()
+    if explicit:
+        if not os.path.exists(explicit):
+            raise RuntimeError(f"CHROMEDRIVER does not exist: {explicit}")
+        return explicit
+
+    binary = os.environ.get("CHROME_BINARY", "").strip()
+    if binary:
+        version = _browser_version(binary)
+        if version:
+            try:
+                return ChromeDriverManager(driver_version=version).install()
+            except Exception as e:
+                # An exact build may not be published for a Chromium point release;
+                # the major line usually is.
+                major = version.split(".")[0]
+                print(f"  no chromedriver {version} ({e}); trying {major}")
+                try:
+                    return ChromeDriverManager(driver_version=major).install()
+                except Exception as e2:
+                    raise RuntimeError(
+                        f"No chromedriver for browser {version}: {e2}\n"
+                        "  On Debian/Ubuntu install the matched pair instead:\n"
+                        "    sudo apt install -y chromium chromium-driver\n"
+                        "    CHROMEDRIVER=/usr/bin/chromedriver CHROME_BINARY=/usr/bin/chromium ..."
+                    ) from e2
     return ChromeDriverManager().install()
 
 
@@ -958,6 +1013,9 @@ def create_driver(chrome_path):
             "    browser. Check with: google-chrome --version\n"
             "  · On ARM Linux there is no Google Chrome build — install Chromium and\n"
             "    point at it: CHROME_BINARY=/usr/bin/chromium\n"
+            "  · Driver/browser version mismatch? Use the distro's matched pair:\n"
+            "    sudo apt install -y chromium chromium-driver, then\n"
+            "    CHROMEDRIVER=/usr/bin/chromedriver\n"
             "  · Version mismatch between Chrome and chromedriver? Clear the cache:\n"
             "    rm -rf ~/.wdm\n"
             "  · Running as root or in a container adds --no-sandbox and\n"
