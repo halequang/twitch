@@ -21,7 +21,7 @@ ADMIN_EMAILS = "quanghavhit@gmail.com"
 # Expiry alerts to the shop owner. TELEGRAM_CHAT_ID is your own chat/group id;
 # the bot token is a secret: `wrangler secret put TELEGRAM_BOT_TOKEN`.
 # Leave the id empty and nothing is sent — the pending list still shows in /admin.
-TELEGRAM_CHAT_ID = ""
+TELEGRAM_CHAT_ID = "8395423363:AAGPWooRHb4lpbV8NckZaTTHZa8m3iBjB3w"
 
 # Steam account rentals (/game → Thuê tài khoản). Storage for the account pool
 # and orders. Create with:
@@ -40,7 +40,7 @@ database_id = "a68b9377-2188-4bf5-822f-ed7cfbf0c8d6"
 # otherwise only noticed when a customer loads /game, so this makes detection
 # independent of traffic.
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["*/59 * * * *"]
 
 [[routes]]
 pattern = "fungamingvn.shop/*"
