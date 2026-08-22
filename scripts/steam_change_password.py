@@ -154,7 +154,7 @@ REFRESH_TOKENS_FILE = "refresh_tokens.txt"
 # through _d1crypto.mjs so it byte-matches the worker's encryptSecret; D1 access
 # is via `wrangler d1 execute` run in TWITCH_DIR. --remote hits production D1
 # (default is the local miniflare D1).
-TWITCH_DIR = "/Users/lequangha/WebstormProjects/twitch"
+TWITCH_DIR = '/home/haleserver/fungame/twitch'
 D1_DB_NAME = "fungaming-rentals"
 _ENC_HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_d1crypto.mjs")
 

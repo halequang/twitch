@@ -37,12 +37,21 @@ Options:
   --limit <n>       stop after n mailboxes in --all (default 5)
   --list            print what was parsed and exit. No browser, no network
   --headless        no visible window: sign in, report OK/FAIL, close. Use this to
-                    CHECK credentials; the point of a visible run is to read mail
-  --keep-open       leave the window open after signing in (default when visible)
+                    CHECK credentials, or to read the latest email in a terminal
+  --keep-open       leave the window open after signing in. Default on a visible
+                    single-mailbox run; --no-keep-open closes it instead
+  --no-read         skip reading the newest message (sign in and stop)
+  --body-chars <n>  how much body text to print (default 1500)
   --timeout <s>     seconds to wait for each page (default 30)
 
-The window stays open on a visible run — closing it is the operator's job, since
-the whole point is to land in the inbox and read it.
+After signing in it opens the newest message in the inbox and prints sender, date,
+subject and body text — which is where a Steam Guard code would be. "Newest" is the
+highest IMAP UID on the listing rather than the top row, because the top row depends
+on the mailbox's sort order and would be the OLDEST message on an ascending one.
+
+The window stays open on a visible run, and closing it is the operator's job. That
+needs Chrome's `detach` option, not just skipping driver.quit(): Selenium terminates
+chromedriver when the interpreter exits, and chromedriver closes Chrome with it.
 
 NOTE: these hosts are plain HTTP, so the mailbox password crosses the network in
 cleartext. That is a property of the provider, not of this script, but it is worth
@@ -198,17 +207,24 @@ def mask(secret):
     return f"{text[:2]}{'*' * (len(text) - 2)}"
 
 
-def create_driver(headless, timeout):
+def create_driver(headless, timeout, detach=False):
     """A fresh temporary Chrome profile, so each run starts signed out.
 
     Same shape as create_driver in steam_change_password.py. Copied rather than
     imported: that module is a CLI that reads sys.argv at import time, and pulling
     it in here would mean its arguments and its optional Graph dependencies.
+
+    `detach` is what makes --keep-open actually keep the window. Simply not calling
+    driver.quit() is not enough: Selenium's Service.__del__ terminates chromedriver
+    when the interpreter shuts down, and chromedriver takes Chrome with it unless
+    this option was set at launch.
     """
     import tempfile
 
     profile_dir = tempfile.mkdtemp(prefix="qisteam_mail_")
     opts = Options()
+    if detach:
+        opts.add_experimental_option("detach", True)
     opts.add_argument(f"--user-data-dir={profile_dir}")
     if headless:
         opts.add_argument("--headless=new")
@@ -327,6 +343,86 @@ def login_error(driver):
     return None
 
 
+def _first_text(driver, selectors, limit=300):
+    """First non-empty visible text among these selectors."""
+    for selector in selectors:
+        for el in driver.find_elements(By.CSS_SELECTOR, selector):
+            try:
+                if el.is_displayed() and (el.text or "").strip():
+                    return " ".join(el.text.split())[:limit]
+            except Exception:
+                continue
+    return ""
+
+
+def read_latest_email(driver, url, timeout, body_chars):
+    """Open the newest message in the inbox and pull out who/what/when/body.
+
+    "Newest" is the highest IMAP UID on the listing, not the top row: UIDs are
+    assigned in arrival order and always increase, whereas the top row depends on
+    whichever sort the mailbox is configured for — reading row one would quietly
+    return the OLDEST message on an ascending sort. The message's own date is
+    printed so the answer can be checked rather than trusted.
+
+    Returns a dict, or None with a reason when there is nothing to read.
+    """
+    base = url.rstrip("/").split("?")[0]
+    # Wait for ROWS, not for the table. Roundcube renders #messagelist immediately
+    # and fills it over AJAX a few seconds later, so accepting the container was
+    # enough to report a mailbox with three messages in it as empty.
+    try:
+        WebDriverWait(driver, timeout).until(
+            lambda d: d.find_elements(By.CSS_SELECTOR, "[id^=rcmrow]")
+        )
+    except Exception:
+        if not driver.find_elements(By.CSS_SELECTOR, "#messagelist, .messagelist"):
+            return None, "no message list on the page"
+        return None, f"no messages appeared within {timeout}s (empty inbox, or a slow list)"
+
+    uids = []
+    for row in driver.find_elements(By.CSS_SELECTOR, "[id^=rcmrow]"):
+        raw = (row.get_attribute("id") or "").replace("rcmrow", "")
+        # Roundcube uses "<uid>" in a single folder and "<uid>-<folder>" in search
+        # results and multi-folder views.
+        digits = raw.split("-")[0]
+        if digits.isdigit():
+            uids.append(int(digits))
+    if not uids:
+        return None, "inbox is empty (no message rows)"
+
+    uid = max(uids)
+    driver.get(f"{base}/?_task=mail&_mbox=INBOX&_uid={uid}&_action=show")
+
+    subject = _first_text(driver, ("#messageheader .subject", ".header-title", "h2.subject", ".subject"))
+    sender = _first_text(driver, ("#messageheader .from .adr", ".header-from", ".from .adr", ".adr"))
+    when = _first_text(driver, ("#messageheader .date", ".header-date", ".date"), limit=80)
+
+    # The body lives in an iframe in the elastic skin; #messagebody is the
+    # non-iframe fallback.
+    body = ""
+    frames = driver.find_elements(By.CSS_SELECTOR, "#messagecontframe, iframe#messagecontframe")
+    if frames:
+        try:
+            driver.switch_to.frame(frames[0])
+            body = " ".join((driver.find_element(By.TAG_NAME, "body").text or "").split())
+        except Exception:
+            body = ""
+        finally:
+            driver.switch_to.default_content()
+    if not body:
+        body = _first_text(driver, ("#messagebody", ".message-part", "#messagecontent"), limit=body_chars)
+
+    return {
+        "uid": uid,
+        "count": len(uids),
+        "subject": subject or "(no subject)",
+        "from": sender or "(unknown sender)",
+        "date": when or "(no date shown)",
+        "body": body[:body_chars],
+        "url": driver.current_url,
+    }, None
+
+
 def open_mailbox(driver, url, account, timeout):
     """Load the webmail, fill both fields, submit. Returns (ok, detail)."""
     driver.get(url)
@@ -378,7 +474,10 @@ def main():
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--keep-open", action="store_true")
+    parser.add_argument("--keep-open", dest="keep_open", action="store_true", default=None)
+    parser.add_argument("--no-keep-open", dest="keep_open", action="store_false")
+    parser.add_argument("--no-read", dest="read", action="store_false", default=True)
+    parser.add_argument("--body-chars", type=int, default=1500)
     parser.add_argument("--timeout", type=int, default=30)
     args = parser.parse_args()
 
@@ -436,8 +535,13 @@ def main():
     if args.all:
         chosen = chosen[: max(1, args.limit)]
 
-    # A visible run exists to land in the inbox and read it, so the window stays.
-    keep_open = args.keep_open or (not args.headless and not args.all)
+    # A visible single run exists to land in the inbox, so the window stays unless
+    # told otherwise; --keep-open forces it, --no-keep-open forbids it. Headless has
+    # no window to keep, and a sweep would leave one per mailbox.
+    keep_open = args.keep_open if args.keep_open is not None else (not args.headless and not args.all)
+    if keep_open and args.headless:
+        print("(--keep-open ignored: --headless has no window to keep)")
+        keep_open = False
 
     results = []
     driver = None
@@ -448,7 +552,7 @@ def main():
             if driver is not None:
                 driver.quit()
                 driver = None
-            driver = create_driver(args.headless, args.timeout)
+            driver = create_driver(args.headless, args.timeout, detach=keep_open)
             print(f"→ {account['email']}  (steam {account['login']}, line {account['line']}) at {args.url}")
             try:
                 ok, detail = open_mailbox(driver, args.url, account, args.timeout)
@@ -457,9 +561,26 @@ def main():
             results.append((account, ok, detail))
             print(f"   {'OK  ' if ok else 'FAIL'} {detail}")
 
+            if ok and args.read:
+                try:
+                    mail, why = read_latest_email(driver, args.url, args.timeout, args.body_chars)
+                except Exception as err:
+                    mail, why = None, f"{type(err).__name__}: {err}".split("\n")[0][:160]
+                if mail:
+                    print(f"   latest of {mail['count']} message(s) on this page (uid {mail['uid']})")
+                    print(f"     From    {mail['from']}")
+                    print(f"     Date    {mail['date']}")
+                    print(f"     Subject {mail['subject']}")
+                    body = mail["body"] or "(no text body — probably HTML-only or an attachment)"
+                    print(f"     Body    {body}")
+                else:
+                    print(f"   could not read the latest email: {why}")
+
             if ok and keep_open:
                 print("\nSigned in. The window stays open — close it when you are done.")
-                driver = None  # dropped on purpose: quitting would close the inbox
+                # Dropped on purpose. quit() would close the inbox, and Chrome was
+                # launched detached so it survives chromedriver going away.
+                driver = None
                 break
     finally:
         if driver is not None and not keep_open:
