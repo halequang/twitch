@@ -152,7 +152,23 @@ STEAM_CHANGE_PASSWORD_URL = (
 STEAM_CHANGE_EMAIL_URL = (
     "https://help.steampowered.com/en/wizard/HelpChangeEmail?redir=store/account/"
 )
-HEADLESS = False
+# Headless is decided per machine, not hardcoded: this runs on a Mac with a screen
+# and on a Linux server with none, and Chrome exits immediately if asked to open a
+# window where there is no display. Override either way with
+# STEAM_CHPW_HEADLESS=1 / =0.
+def _want_headless():
+    forced = os.environ.get("STEAM_CHPW_HEADLESS", "").strip().lower()
+    if forced in ("1", "true", "yes"):
+        return True
+    if forced in ("0", "false", "no"):
+        return False
+    # A Linux box with no X or Wayland display cannot show a window at all.
+    if sys.platform.startswith("linux"):
+        return not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    return False
+
+
+HEADLESS = _want_headless()
 GUARD_CODE_WAIT_SEC = 120
 GUARD_POLL_INTERVAL_SEC = 3
 # Optional file mapping email -> outlook token, so accounts without inline
@@ -894,10 +910,18 @@ def create_driver(chrome_path):
     if HEADLESS:
         opts.add_argument("--headless=new")
         opts.add_argument("--window-size=1440,900")
+        # Was `options.add_argument` here — an undefined name, harmless only because
+        # the branch never ran while HEADLESS was hardcoded False. It would have
+        # fired the moment headless was switched on, which is exactly what a server
+        # needs.
+        opts.add_argument("--disable-gpu")
+    # Outside the headless branch on purpose. A server usually runs this as root or
+    # in a container, where Chrome's sandbox cannot initialise and /dev/shm is
+    # 64MB — either one kills the process with the same unhelpful "Chrome instance
+    # exited", headless or not.
+    if sys.platform.startswith("linux"):
         opts.add_argument("--no-sandbox")
         opts.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--remote-debugging-port=9222")
     opts.add_argument("--disable-popup-blocking")
     opts.add_experimental_option("prefs", {
         "credentials_enable_service": False,
@@ -906,7 +930,23 @@ def create_driver(chrome_path):
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
-    driver = webdriver.Chrome(service=Service(chrome_path), options=opts)
+    try:
+        driver = webdriver.Chrome(service=Service(chrome_path), options=opts)
+    except Exception as e:
+        # "session not created: Chrome instance exited" says nothing about why, and
+        # the verbose log it points at is not being written. These are the causes
+        # that actually happen, in the order they happen.
+        raise RuntimeError(
+            f"Chrome would not start (headless={HEADLESS}, platform={sys.platform}): {e}\n"
+            "  · No display? On a server this needs headless — it is now automatic when\n"
+            "    DISPLAY is unset, or force it with STEAM_CHPW_HEADLESS=1.\n"
+            "  · Chrome itself installed? webdriver-manager fetches the DRIVER, never the\n"
+            "    browser. Check with: google-chrome --version\n"
+            "  · Version mismatch between Chrome and chromedriver? Clear the cache:\n"
+            "    rm -rf ~/.wdm\n"
+            "  · Running as root or in a container adds --no-sandbox and\n"
+            "    --disable-dev-shm-usage automatically on Linux."
+        ) from e
     driver.set_window_size(1200, 900)
     return driver
 
