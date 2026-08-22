@@ -27,6 +27,8 @@ Usage:
   python3 scripts/open_qisteam_mail.py --login Hn1Ea8Tw3Kg6
   python3 scripts/open_qisteam_mail.py --all --headless
   python3 scripts/open_qisteam_mail.py --login Hn1Ea8Tw3Kg6 --url http://mail.88gog.com/
+  CODE=$(python3 scripts/open_qisteam_mail.py --login Hn1Ea8Tw3Kg6 \
+             --mode extract-code --headless)
 
 Options:
   --file <path>     account file (default: steam_accounts.txt beside the repo root)
@@ -41,6 +43,11 @@ Options:
   --keep-open       leave the window open after signing in. Default on a visible
                     single-mailbox run; --no-keep-open closes it instead
   --no-read         skip reading the newest message (sign in and stop)
+  --mode <m>        open (default) prints the newest message for a human to read;
+                    extract-code prints ONLY the Steam Guard code on stdout, so it
+                    can be captured, and exits 1 when there is no usable one
+  --scan <n>        how many of the newest mails extract-code considers (default 2,
+                    matching CODE_SCAN_DEPTH in src/lib/steamcode.js)
   --body-chars <n>  how much body text to print (default 1500)
   --timeout <s>     seconds to wait for each page (default 30)
 
@@ -48,6 +55,19 @@ After signing in it opens the newest message in the inbox and prints sender, dat
 subject and body text — which is where a Steam Guard code would be. "Newest" is the
 highest IMAP UID on the listing rather than the top row, because the top row depends
 on the mailbox's sort order and would be the OLDEST message on an ascending one.
+
+`--mode extract-code` turns that into one line of output: the code, or nothing and
+exit 1. Whether a code may be handed over is NOT decided here — the body is passed
+to scripts/_classify_code.mjs, which runs the shop's own classifyCode/pickLoginCode
+from src/lib/steamcode.js. Steam sends the same-looking mail for signing in and for
+changing credentials, so a code from a credential-change mail is skipped past rather
+than served, and anything unrecognised is refused. Reimplementing those rules in
+Python would put a second copy of them in the repo, and the copy that drifts hands
+over an account. With --all, stdout becomes "<mailbox>\t<code>" per line.
+
+This is the path for the @qinianstm.com mailboxes specifically: the /api/read-code
+endpoint reads through Microsoft Graph, so it serves outlook/hotmail only, and those
+mailboxes are unreachable by it.
 
 The window stays open on a visible run, and closing it is the operator's job. That
 needs Chrome's `detach` option, not just skipping driver.quit(): Selenium terminates
@@ -59,8 +79,10 @@ knowing before running it on an untrusted network.
 """
 
 import argparse
+import json
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -331,16 +353,88 @@ def login_error(driver):
     """Whatever the webmail is complaining about, if anything.
 
     Any message on a login page is a rejection — Roundcube shows nothing there on
-    success, it navigates instead — so severity is not inspected.
+    success, it navigates instead — so severity is not inspected. With one
+    exception: it posts a "正在载入…" toast through the same mechanism while loading,
+    and reading that as a rejection failed perfectly good logins whenever the toast
+    won the race against the inbox appearing.
     """
     for selector in MESSAGE_SELECTORS:
         for el in driver.find_elements(By.CSS_SELECTOR, selector):
             try:
-                if el.is_displayed() and (el.text or "").strip():
-                    return " ".join(el.text.split())[:160]
+                if not el.is_displayed():
+                    continue
+                # The toast container (#messagestack) carries no class of its own —
+                # the "loading" class is on the message div INSIDE it — so checking
+                # only this element's class let "正在载入…" through as a rejection and
+                # failed good logins whenever the toast beat the inbox.
+                if driver.execute_script(
+                    "const el = arguments[0];"
+                    "return /loading/i.test(el.className || '') || !!el.querySelector('.loading');",
+                    el,
+                ):
+                    continue
+                text = " ".join((el.text or "").split())
+                if text:
+                    return text[:160]
             except Exception:
                 continue
     return None
+
+
+# Roundcube's own list state, which holds the real IMAP uid per row. Asked first
+# because the row id cannot be relied on to contain it: this install renders
+# `rcmrowMw`, `rcmrowMg`, `rcmrowMQ` — base64 of 3, 2 and 1 — so parsing digits out
+# of the id found nothing and reported a three-message inbox as empty.
+UID_JS = """
+try {
+  const list = window.rcmail && rcmail.message_list;
+  if (list && list.rows) {
+    const out = [];
+    for (const key in list.rows) {
+      const row = list.rows[key];
+      if (row && row.uid !== undefined && row.uid !== null) out.push(String(row.uid));
+    }
+    if (out.length) return out;
+  }
+} catch (e) { /* fall through to the ids */ }
+return null;
+"""
+
+
+def row_uids(driver):
+    """Every message uid on the current listing, as ints."""
+    def as_int(value):
+        # "<uid>" in one folder, "<uid>-<folder>" in search and multi-folder views.
+        head = str(value).split("-")[0].strip()
+        return int(head) if head.isdigit() else None
+
+    found = []
+    try:
+        for value in driver.execute_script(UID_JS) or []:
+            number = as_int(value)
+            if number is not None:
+                found.append(number)
+    except Exception:
+        found = []
+    if found:
+        return found
+
+    # No usable list object: recover the uid from each row id, which is either the
+    # number itself or that number base64'd with the padding stripped.
+    import base64
+
+    for row in driver.find_elements(By.CSS_SELECTOR, "[id^=rcmrow]"):
+        token = (row.get_attribute("id") or "")[len("rcmrow"):]
+        number = as_int(token)
+        if number is None and token:
+            try:
+                padded = token + "=" * (-len(token) % 4)
+                number = as_int(base64.b64decode(padded).decode("ascii", "ignore"))
+            except Exception:
+                number = None
+        if number is not None:
+            found.append(number)
+    return found
 
 
 def _first_text(driver, selectors, limit=300):
@@ -355,16 +449,39 @@ def _first_text(driver, selectors, limit=300):
     return ""
 
 
-def read_latest_email(driver, url, timeout, body_chars):
-    """Open the newest message in the inbox and pull out who/what/when/body.
+def _lines(text):
+    """Trim each line, drop the empty ones, keep the breaks between them."""
+    kept = [" ".join(line.split()) for line in str(text or "").splitlines()]
+    return "\n".join(line for line in kept if line)
 
-    "Newest" is the highest IMAP UID on the listing, not the top row: UIDs are
-    assigned in arrival order and always increase, whereas the top row depends on
+
+def _hidden_text(driver, selectors, limit=300):
+    """Same, but reading textContent so a collapsed element still answers.
+
+    The message date lives in the "Details" panel, which starts collapsed — so
+    .text is empty for it even though the text is right there in the DOM.
+    """
+    for selector in selectors:
+        for el in driver.find_elements(By.CSS_SELECTOR, selector):
+            try:
+                text = " ".join((driver.execute_script("return arguments[0].textContent", el) or "").split())
+                if text:
+                    return text[:limit]
+            except Exception:
+                continue
+    return ""
+
+
+def read_newest_emails(driver, url, timeout, body_chars, count=1):
+    """Open the newest `count` messages and pull out who/what/when/body for each.
+
+    "Newest" is the highest IMAP UIDs on the listing, not the top rows: UIDs are
+    assigned in arrival order and always increase, whereas row order depends on
     whichever sort the mailbox is configured for — reading row one would quietly
-    return the OLDEST message on an ascending sort. The message's own date is
-    printed so the answer can be checked rather than trusted.
+    return the OLDEST message on an ascending sort. Each message's own date is
+    reported so the answer can be checked rather than trusted.
 
-    Returns a dict, or None with a reason when there is nothing to read.
+    Returns (list newest-first, None), or (None, reason) when there is nothing.
     """
     base = url.rstrip("/").split("?")[0]
     # Wait for ROWS, not for the table. Roundcube renders #messagelist immediately
@@ -379,48 +496,108 @@ def read_latest_email(driver, url, timeout, body_chars):
             return None, "no message list on the page"
         return None, f"no messages appeared within {timeout}s (empty inbox, or a slow list)"
 
-    uids = []
-    for row in driver.find_elements(By.CSS_SELECTOR, "[id^=rcmrow]"):
-        raw = (row.get_attribute("id") or "").replace("rcmrow", "")
-        # Roundcube uses "<uid>" in a single folder and "<uid>-<folder>" in search
-        # results and multi-folder views.
-        digits = raw.split("-")[0]
-        if digits.isdigit():
-            uids.append(int(digits))
+    uids = row_uids(driver)
     if not uids:
-        return None, "inbox is empty (no message rows)"
+        return None, "message rows are present but carry no readable uid"
 
-    uid = max(uids)
-    driver.get(f"{base}/?_task=mail&_mbox=INBOX&_uid={uid}&_action=show")
+    listed = len(uids)
+    mails = []
+    for uid in sorted(uids, reverse=True)[: max(1, count)]:
+        driver.get(f"{base}/?_task=mail&_mbox=INBOX&_uid={uid}&_action=show")
 
-    subject = _first_text(driver, ("#messageheader .subject", ".header-title", "h2.subject", ".subject"))
-    sender = _first_text(driver, ("#messageheader .from .adr", ".header-from", ".from .adr", ".adr"))
-    when = _first_text(driver, ("#messageheader .date", ".header-date", ".date"), limit=80)
+        subject = _first_text(driver, ("#messageheader .subject", ".header-title", "h2.subject", ".subject"))
+        sender = _first_text(driver, ("#messageheader .from .adr", ".header-from", ".from .adr", ".adr"))
+        # The visible summary line reads "在 2026-08-22 16:20 来自 Steam Team"; the bare
+        # date sits in the collapsed Details panel, hence the textContent fallback.
+        when = _first_text(driver, ("#messageheader .date", ".header.date", ".header-date"), limit=120)
+        if not when:
+            when = _hidden_text(driver, (".header.date", "#messageheader .date", ".date"), limit=120)
+        if not when:
+            when = _first_text(driver, (".header-summary",), limit=120)
 
-    # The body lives in an iframe in the elastic skin; #messagebody is the
-    # non-iframe fallback.
-    body = ""
-    frames = driver.find_elements(By.CSS_SELECTOR, "#messagecontframe, iframe#messagecontframe")
-    if frames:
-        try:
-            driver.switch_to.frame(frames[0])
-            body = " ".join((driver.find_element(By.TAG_NAME, "body").text or "").split())
-        except Exception:
-            body = ""
-        finally:
-            driver.switch_to.default_content()
-    if not body:
-        body = _first_text(driver, ("#messagebody", ".message-part", "#messagecontent"), limit=body_chars)
+        # The body lives in an iframe in the elastic skin; #messagebody is the
+        # non-iframe fallback.
+        # Line breaks are KEPT here. classifyCode splits the body into sentences on
+        # newlines and CJK terminators to strip advice ("if this wasn't you, reset
+        # your password") before deciding what the mail is for — so flattening the
+        # body to one line, as an earlier version did, left the advice in the text
+        # and had a Vietnamese sign-in notice classified as a credential change.
+        body = ""
+        frames = driver.find_elements(By.CSS_SELECTOR, "#messagecontframe, iframe#messagecontframe")
+        if frames:
+            try:
+                driver.switch_to.frame(frames[0])
+                body = _lines(driver.find_element(By.TAG_NAME, "body").text)
+            except Exception:
+                body = ""
+            finally:
+                driver.switch_to.default_content()
+        if not body:
+            body = _lines(_hidden_text(driver, ("#messagebody", ".message-part", "#messagecontent"), limit=body_chars))
 
-    return {
-        "uid": uid,
-        "count": len(uids),
-        "subject": subject or "(no subject)",
-        "from": sender or "(unknown sender)",
-        "date": when or "(no date shown)",
-        "body": body[:body_chars],
-        "url": driver.current_url,
-    }, None
+        mails.append({
+            "uid": uid,
+            "count": listed,
+            "subject": subject or "(no subject)",
+            "from": sender or "(unknown sender)",
+            "date": when or "(no date shown)",
+            # Newlines intact for the classifier; the flat copy is for printing.
+            "body": body[:body_chars],
+            "body_flat": " ".join(body.split())[:body_chars],
+            "url": driver.current_url,
+        })
+    return mails, None
+
+
+# A Steam Guard code is five characters, upper-case letters and digits, and every
+# sample in this shop's mailboxes is introduced by a colon:
+#   "...Steam login credentials: 89RXY"   "...Steam 令牌验证码：… V9MN7"
+#   "Mã Steam Guard bạn cần để đăng nhập vào tài khoản: … GFTM8"
+# So a token after a colon is preferred, and a bare five-character token is the
+# fallback. Deliberately NOT used to decide anything: what the code is FOR is
+# settled by src/lib/steamcode.js, and a mail with a code in it is refused unless
+# that classifier calls it a sign-in.
+CODE_TOKEN = re.compile(r"\b[A-Z0-9]{5}\b")
+AFTER_COLON = re.compile(r"[:：]\s*(?:[^\w]{0,8}\s*)?([A-Z0-9]{5})\b")
+
+
+def extract_code(text):
+    """The most likely Steam Guard code in this body, or "" if there is none."""
+    body = str(text or "")
+    for match in AFTER_COLON.finditer(body):
+        return match.group(1)
+    # No colon form: take the first five-character token that mixes letters and
+    # digits, which a word in prose will not do.
+    for token in CODE_TOKEN.findall(body):
+        if any(c.isdigit() for c in token) and any(c.isalpha() for c in token):
+            return token
+    return ""
+
+
+def classify_codes(mails, depth):
+    """Ask the shop's own classifier which of these codes may be handed over.
+
+    Shells out to node, the same way steam_change_password.py shells out to
+    _d1crypto.mjs for the worker's crypto. The alternative — porting
+    CREDENTIAL_CHANGE_PATTERNS and LOGIN_PATTERNS into Python — means two copies of
+    the one list in this repo where drifting is not a cosmetic bug: Steam's sign-in
+    mail and its credential-change mail look alike, and serving the wrong one hands
+    the account over.
+    """
+    payload = json.dumps({
+        "depth": depth,
+        "emails": [
+            {"subject": m["subject"], "readable": m["body"], "code": extract_code(f"{m['body']} {m['subject']}")}
+            for m in mails
+        ],
+    })
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_classify_code.mjs")
+    run = subprocess.run(
+        ["node", helper], input=payload, capture_output=True, text=True, cwd=ROOT
+    )
+    if run.returncode != 0:
+        raise RuntimeError(f"classifier failed: {(run.stderr or '').strip()[:200]}")
+    return json.loads(run.stdout or "{}")
 
 
 def open_mailbox(driver, url, account, timeout):
@@ -477,6 +654,8 @@ def main():
     parser.add_argument("--keep-open", dest="keep_open", action="store_true", default=None)
     parser.add_argument("--no-keep-open", dest="keep_open", action="store_false")
     parser.add_argument("--no-read", dest="read", action="store_false", default=True)
+    parser.add_argument("--mode", choices=("open", "extract-code"), default="open")
+    parser.add_argument("--scan", type=int, default=2)
     parser.add_argument("--body-chars", type=int, default=1500)
     parser.add_argument("--timeout", type=int, default=30)
     args = parser.parse_args()
@@ -538,12 +717,20 @@ def main():
     # A visible single run exists to land in the inbox, so the window stays unless
     # told otherwise; --keep-open forces it, --no-keep-open forbids it. Headless has
     # no window to keep, and a sweep would leave one per mailbox.
-    keep_open = args.keep_open if args.keep_open is not None else (not args.headless and not args.all)
+    extracting = args.mode == "extract-code"
+    # In extract-code mode the code is the ONLY thing on stdout, so it can be
+    # captured with `CODE=$(...)`; progress and refusals go to stderr.
+    log = sys.stderr if extracting else sys.stdout
+
+    keep_open = args.keep_open if args.keep_open is not None else (
+        not args.headless and not args.all and not extracting
+    )
     if keep_open and args.headless:
-        print("(--keep-open ignored: --headless has no window to keep)")
+        print("(--keep-open ignored: --headless has no window to keep)", file=log)
         keep_open = False
 
     results = []
+    codes = []
     driver = None
     try:
         for account in chosen:
@@ -553,31 +740,63 @@ def main():
                 driver.quit()
                 driver = None
             driver = create_driver(args.headless, args.timeout, detach=keep_open)
-            print(f"→ {account['email']}  (steam {account['login']}, line {account['line']}) at {args.url}")
+            print(f"→ {account['email']}  (steam {account['login']}, line {account['line']}) at {args.url}", file=log)
             try:
                 ok, detail = open_mailbox(driver, args.url, account, args.timeout)
             except Exception as err:  # a page that never loads must not lose the rest
                 ok, detail = False, f"{type(err).__name__}: {err}".split("\n")[0][:160]
             results.append((account, ok, detail))
-            print(f"   {'OK  ' if ok else 'FAIL'} {detail}")
+            print(f"   {'OK  ' if ok else 'FAIL'} {detail}", file=log)
 
-            if ok and args.read:
+            if ok and (args.read or extracting):
+                # Two mails deep by default, matching CODE_SCAN_DEPTH in
+                # src/lib/steamcode.js: an unrelated Steam mail can land between the
+                # login attempt and this run, burying the code under one nobody can
+                # use. Any deeper and the code has likely expired or belongs to
+                # somebody else's attempt.
+                count = max(1, args.scan) if extracting else 1
                 try:
-                    mail, why = read_latest_email(driver, args.url, args.timeout, args.body_chars)
+                    mails, why = read_newest_emails(driver, args.url, args.timeout, args.body_chars, count)
                 except Exception as err:
-                    mail, why = None, f"{type(err).__name__}: {err}".split("\n")[0][:160]
-                if mail:
-                    print(f"   latest of {mail['count']} message(s) on this page (uid {mail['uid']})")
-                    print(f"     From    {mail['from']}")
-                    print(f"     Date    {mail['date']}")
-                    print(f"     Subject {mail['subject']}")
-                    body = mail["body"] or "(no text body — probably HTML-only or an attachment)"
-                    print(f"     Body    {body}")
+                    mails, why = None, f"{type(err).__name__}: {err}".split("\n")[0][:160]
+
+                if not mails:
+                    print(f"   could not read the latest email: {why}", file=log)
+                elif extracting:
+                    verdict = classify_codes(mails, count)
+                    for mail, seen in zip(mails, verdict.get("purposes", [])):
+                        # The code is shown as found/absent because a verdict on a
+                        # mail carrying no code at all — a plain "new sign in"
+                        # notice — otherwise reads as if something was withheld.
+                        found = seen.get("code") or "-"
+                        print(
+                            f"   uid {mail['uid']:<5} {mail['date']:14} "
+                            f"{seen.get('purpose', '?'):18} code {found:6} {mail['subject']}",
+                            file=log,
+                        )
+                    if verdict.get("code"):
+                        codes.append((account, verdict["code"]))
+                        # stdout, and nothing else on it.
+                        print(f"{account['email']}\t{verdict['code']}" if len(chosen) > 1 else verdict["code"])
+                    else:
+                        # Fails closed, exactly as the endpoint does: a
+                        # credential-change code is skipped past, never served.
+                        print(
+                            f"   no login code to hand over (newest verdict: "
+                            f"{verdict.get('purpose', 'unknown')})",
+                            file=log,
+                        )
                 else:
-                    print(f"   could not read the latest email: {why}")
+                    mail = mails[0]
+                    print(f"   latest of {mail['count']} message(s) on this page (uid {mail['uid']})", file=log)
+                    print(f"     From    {mail['from']}", file=log)
+                    print(f"     Date    {mail['date']}", file=log)
+                    print(f"     Subject {mail['subject']}", file=log)
+                    body = mail["body_flat"] or "(no text body — probably HTML-only or an attachment)"
+                    print(f"     Body    {body}", file=log)
 
             if ok and keep_open:
-                print("\nSigned in. The window stays open — close it when you are done.")
+                print("\nSigned in. The window stays open — close it when you are done.", file=log)
                 # Dropped on purpose. quit() would close the inbox, and Chrome was
                 # launched detached so it survives chromedriver going away.
                 driver = None
@@ -586,7 +805,12 @@ def main():
         if driver is not None and not keep_open:
             driver.quit()
 
-    print(f"\n{sum(1 for _, ok, _ in results if ok)}/{len(results)} signed in.")
+    print(f"\n{sum(1 for _, ok, _ in results if ok)}/{len(results)} signed in.", file=log)
+    if extracting:
+        print(f"{len(codes)}/{len(results)} yielded a login code.", file=log)
+        # Signing in is not the point here: a run that reads a mailbox perfectly and
+        # finds no usable code has not produced what was asked for.
+        return 0 if codes and len(codes) == len(results) else 1
     return 0 if all(ok for _, ok, _ in results) else 1
 
 

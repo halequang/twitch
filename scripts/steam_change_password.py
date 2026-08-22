@@ -19,8 +19,20 @@ Email verification codes are read automatically, tried in this order:
      ONLY tried for outlook.com / hotmail.com addresses (GRAPH_MAIL_DOMAINS): the
      endpoint reads via Microsoft Graph, so any other provider is skipped rather
      than polled pointlessly.
-  2. Microsoft Graph directly, if the account carries refresh_token|client_id.
-  3. a manual prompt.
+  2. the mailbox's own WEBMAIL, for the providers Graph cannot read — chiefly
+     @qinianstm.com on mail.qisteam.com, which is most of this pool. Signs in with
+     the mailbox password and reads the newest messages through
+     scripts/open_qisteam_mail.py, whose reader and classifier are reused rather
+     than copied. Needs that password: field 4 of a `----` line, or
+     steam_accounts.email_password_enc in --db mode.
+  3. Microsoft Graph directly, if the account carries refresh_token|client_id.
+  4. a manual prompt.
+
+Which code is taken differs by step. A Guard prompt during sign-in wants the
+sign-in code; the change-password and change-email wizards want the
+credential-change code Steam mails for exactly that purpose — the one
+pickLoginCode refuses to serve a RENTER. Here the operator owns the account, so
+that code is what is asked for, and the label of whatever is used is printed.
 
 That endpoint returns "the newest email carrying a code" with no timestamp, so
 the code present BEFORE the send is snapshotted and poll_new_code waits for a
@@ -155,6 +167,7 @@ REFRESH_TOKENS_FILE = "refresh_tokens.txt"
 # is via `wrangler d1 execute` run in TWITCH_DIR. --remote hits production D1
 # (default is the local miniflare D1).
 TWITCH_DIR = '/home/haleserver/fungame/twitch'
+# TWITCH_DIR = '/Users/lequangha/WebstormProjects/twitch'
 D1_DB_NAME = "fungaming-rentals"
 _ENC_HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_d1crypto.mjs")
 
@@ -195,6 +208,10 @@ def load_accounts(path):
                     continue
                 acc = {
                     "email": p[1],
+                    # Field 3 is the mailbox password. Carried now because a
+                    # non-Microsoft mailbox is read by signing into its webmail,
+                    # which needs it.
+                    "email_pass": p[2] if len(p) > 2 else "",
                     "steam_user": p[3],
                     "steam_pass": p[4],
                     "refresh_token": p[6] if len(p) > 6 else "",
@@ -206,6 +223,9 @@ def load_accounts(path):
                     continue
                 acc = {
                     "email": p[2] if len(p) > 2 else "",
+                    # Field 4 is the MAILBOX password (field 2 is Steam's). Notes
+                    # are glued onto it in that file, hence the trim.
+                    "email_pass": _clean_mail_pass(p[3]) if len(p) > 3 else "",
                     "steam_user": p[0],
                     "steam_pass": p[1],
                     "refresh_token": "",
@@ -319,8 +339,213 @@ def _read_code_api(acc):
         return ""
 
 
+# --- Roundcube webmail (qinianstm.com and the other non-Microsoft hosts) ------
+# Most of this pool's mailboxes are NOT Microsoft. @qinianstm.com is served by
+# Roundcube at mail.qisteam.com, which Graph cannot read — so every rotation on
+# those accounts fell through to the manual prompt, which is also the reason an
+# unattended run could not touch them.
+#
+# scripts/open_qisteam_mail.py already signs into that webmail, reads the newest
+# messages and labels each one using src/lib/steamcode.js's classifier, so it is
+# imported rather than reimplemented here.
+WEBMAIL_TIMEOUT_SEC = 40
+WEBMAIL_SCAN_DEPTH = 3
+# A webmail read is a page load plus a message open, so polling it as fast as the
+# HTTP endpoint would hammer the host for no gain.
+WEBMAIL_POLL_INTERVAL_SEC = 8
+
+_QMAIL = None
+
+
+def _qmail():
+    """The open_qisteam_mail module, imported on first use, or None.
+
+    Imported lazily and by path because this file exists in two places (repo root
+    and scripts/) with different working directories, and because a missing
+    selenium/webdriver install should only matter to a run that actually needs a
+    webmail mailbox.
+    """
+    global _QMAIL
+    if _QMAIL is not None:
+        return _QMAIL or None
+    here = os.path.dirname(os.path.abspath(__file__))
+    for folder in (here, os.path.join(here, "scripts"), os.path.join(TWITCH_DIR, "scripts")):
+        if not os.path.exists(os.path.join(folder, "open_qisteam_mail.py")):
+            continue
+        try:
+            if folder not in sys.path:
+                sys.path.insert(0, folder)
+            import importlib
+            _QMAIL = importlib.import_module("open_qisteam_mail")
+            return _QMAIL
+        except Exception as err:
+            print(f"  webmail reader unavailable ({err})")
+            break
+    _QMAIL = False
+    return None
+
+
+def _clean_mail_pass(value):
+    """Mailbox password with any note glued to its tail removed.
+
+    steam_accounts.txt really does hold "131641-> day 2 1 tuan"; the note is not
+    part of the password. Delegated to open_qisteam_mail so both parse that file
+    the same way.
+    """
+    module = _qmail()
+    if module:
+        return module.clean_secret(value)
+    return re.split(r"(\s|->|\u2192|\uff08|\(|,|;)", str(value or ""), 1)[0].strip()
+
+
+def _webmail_url(email):
+    """The webmail that serves this address, or "".
+
+    The domain map lives in open_qisteam_mail.DOMAIN_HOSTS so the two cannot
+    disagree about which host serves which domain.
+    """
+    module = _qmail()
+    if not module:
+        return ""
+    domain = str(email or "").rsplit("@", 1)[-1].strip().lower()
+    host = module.DOMAIN_HOSTS.get(domain, "")
+    return f"http://{host}/" if host else ""
+
+
+def _can_use_webmail(acc):
+    """Whether this account's mailbox can be read over its webmail."""
+    return bool(_webmail_url(acc.get("email")) and acc.get("email_pass"))
+
+
+def _pick_code(purposes, want, label=""):
+    """The code this step needs, out of the classifier's per-mail verdicts.
+
+    `want` is 'credential_change' for the wizards — Steam's own mail says "the code
+    you need to change your Steam login credentials" — and 'login' for a Guard
+    prompt during sign-in.
+
+    Falling back to ANY extracted code is deliberate, and is the one place this
+    script parts company with the renter-facing endpoint. pickLoginCode refuses a
+    credential-change code because handing one to a RENTER is an account transfer;
+    here the operator owns the account and that code is precisely what the wizard is
+    asking for. What the mail was labelled is printed either way, so a surprise is
+    visible rather than silent.
+    """
+    for entry in purposes:
+        if entry.get("code") and entry.get("purpose") == want:
+            return entry["code"]
+    for entry in purposes:
+        if entry.get("code"):
+            if label:
+                print(f"  [{label}] using a code labelled '{entry.get('purpose')}' "
+                      f"(wanted '{want}')")
+            return entry["code"]
+    return ""
+
+
+class _WebmailSession:
+    """A signed-in Roundcube session that can be re-read for new codes.
+
+    Held open across a poll on purpose: signing in costs a browser launch, and
+    relaunching Chrome every few seconds would take longer than a Steam code stays
+    valid.
+    """
+
+    def __init__(self, acc):
+        self.acc = acc
+        self.label = acc.get("steam_user") or acc.get("email") or "?"
+        self.url = _webmail_url(acc.get("email"))
+        self.driver = None
+
+    def open(self):
+        module = _qmail()
+        if not (module and self.url and self.acc.get("email_pass")):
+            return False
+        try:
+            self.driver = module.create_driver(True, WEBMAIL_TIMEOUT_SEC)
+            ok, detail = module.open_mailbox(
+                self.driver,
+                self.url,
+                {"email": self.acc["email"], "password": self.acc["email_pass"]},
+                WEBMAIL_TIMEOUT_SEC,
+            )
+        except Exception as err:
+            print(f"  [{self.label}] webmail session failed: {err}")
+            self.close()
+            return False
+        if not ok:
+            print(f"  [{self.label}] webmail sign-in failed: {detail}")
+            self.close()
+            return False
+        print(f"  [{self.label}] signed into {self.url} as {self.acc['email']}")
+        return True
+
+    def read(self, want):
+        """The newest code in this mailbox that suits `want`, or ""."""
+        module = _qmail()
+        if not (module and self.driver):
+            return ""
+        # Back to the inbox first: a previous read left the browser on a message
+        # page, where the list this reads has no rows to find.
+        base = self.url.rstrip("/").split("?")[0]
+        try:
+            self.driver.get(f"{base}/?_task=mail&_mbox=INBOX")
+            mails, why = module.read_newest_emails(
+                self.driver, self.url, WEBMAIL_TIMEOUT_SEC, 1500, WEBMAIL_SCAN_DEPTH)
+            if not mails:
+                return ""
+            verdict = module.classify_codes(mails, WEBMAIL_SCAN_DEPTH)
+        except Exception as err:
+            print(f"  [{self.label}] webmail read failed: {err}")
+            return ""
+        return _pick_code(verdict.get("purposes", []), want, self.label)
+
+    def close(self):
+        if self.driver is not None:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            self.driver = None
+
+
+def _read_code_webmail(acc, want):
+    """One sign-in, one read, then close. Used for the pre-send snapshot."""
+    session = _WebmailSession(acc)
+    if not session.open():
+        return ""
+    try:
+        return session.read(want)
+    finally:
+        session.close()
+
+
+def _can_read_code(acc):
+    """Whether this account's code can be read without a human."""
+    return _can_use_mail_api(acc) or _can_use_webmail(acc)
+
+
+def _read_code(acc, want="credential_change"):
+    """The newest usable code for this account, from whichever mailbox it has."""
+    if _can_use_mail_api(acc):
+        return _read_code_api(acc)
+    if _can_use_webmail(acc):
+        return _read_code_webmail(acc, want)
+    return ""
+
+
+def _no_mailbox_reason(acc):
+    """Why this account's code cannot be read automatically, for the log."""
+    email = acc.get("email") or "(no address)"
+    if _webmail_url(email) and not acc.get("email_pass"):
+        return f"{email} has no mailbox password on record — cannot read its webmail"
+    if not _webmail_url(email) and not _is_graph_mailbox(email):
+        return f"{email} is neither outlook/hotmail nor a known webmail host"
+    return f"{email} cannot be read automatically"
+
+
 def poll_new_code(acc, before_code, max_wait=GUARD_CODE_WAIT_SEC,
-                  poll_interval=GUARD_POLL_INTERVAL_SEC):
+                  poll_interval=GUARD_POLL_INTERVAL_SEC, want="credential_change"):
     """Wait for a code that is NOT the one already sitting in the mailbox.
 
     /api/read-code returns "the newest email carrying a code" with no timestamp,
@@ -328,15 +553,29 @@ def poll_new_code(acc, before_code, max_wait=GUARD_CODE_WAIT_SEC,
     are single-use, so submitting a stale one just burns the attempt and fails
     confusingly. Snapshotting before the send and waiting for a change is what
     makes this reliable."""
-    if not _can_use_mail_api(acc):
+    if _can_use_mail_api(acc):
+        deadline = time.time() + max_wait
+        while time.time() < deadline:
+            code = _read_code_api(acc)
+            if code and code != before_code:
+                return code
+            time.sleep(poll_interval)
         return ""
-    label = acc.get("steam_user")
-    deadline = time.time() + max_wait
-    while time.time() < deadline:
-        code = _read_code_api(acc)
-        if code and code != before_code:
-            return code
-        time.sleep(poll_interval)
+
+    # Webmail: one sign-in, then re-read the inbox until something new shows up.
+    if _can_use_webmail(acc):
+        session = _WebmailSession(acc)
+        if not session.open():
+            return ""
+        try:
+            deadline = time.time() + max_wait
+            while time.time() < deadline:
+                code = session.read(want)
+                if code and code != before_code:
+                    return code
+                time.sleep(max(poll_interval, WEBMAIL_POLL_INTERVAL_SEC))
+        finally:
+            session.close()
     return ""
 
 
@@ -366,11 +605,30 @@ def _d1(sql, remote):
     return block.get("results", []) if isinstance(block, dict) else []
 
 
+def _decrypt_mail_pass(row, key):
+    """The row's mailbox password, or "" — never fatal.
+
+    Needed to read a non-Microsoft mailbox over its webmail. A row without one, or
+    one that will not decrypt, simply falls back to the manual prompt: losing the
+    automatic code read is a nuisance, whereas skipping the account would leave a
+    stale password in the rental pool.
+    """
+    enc = row.get("email_password_enc") or ""
+    if not enc:
+        return ""
+    try:
+        return _crypto("dec", enc, key)
+    except Exception as err:
+        print(f"  [{row.get('login')}] mailbox password decrypt failed: {err}")
+        return ""
+
+
 def load_accounts_from_db(remote, key):
     """Accounts whose rental is OVER — status 'available' with an expired order —
     decrypted for login. Returns account dicts with db_id + last_expired."""
     sql = ("SELECT sa.id AS id, sa.login AS login, sa.password_enc AS password_enc, "
-           "sa.email AS email, MAX(o.expires_at) AS last_expired "
+           "sa.email AS email, sa.email_password_enc AS email_password_enc, "
+           "MAX(o.expires_at) AS last_expired "
            "FROM steam_accounts sa "
            "JOIN orders o ON o.account_id = sa.id AND o.status = 'expired' "
            "WHERE sa.status = 'available' GROUP BY sa.id")
@@ -389,6 +647,7 @@ def load_accounts_from_db(remote, key):
             "steam_user": r.get("login"),
             "steam_pass": pw,
             "email": r.get("email") or "",
+            "email_pass": _decrypt_mail_pass(r, key),
             "refresh_token": "",
             "client_id": "",
             "last_expired": r.get("last_expired"),
@@ -559,8 +818,8 @@ def load_db_accounts_by_login(logins, remote, key):
     if not logins:
         return []
     quoted = ",".join("'" + s.replace("'", "''") + "'" for s in logins)
-    sql = (f"SELECT id, login, password_enc, email FROM steam_accounts "
-           f"WHERE login IN ({quoted})")
+    sql = (f"SELECT id, login, password_enc, email, email_password_enc "
+           f"FROM steam_accounts WHERE login IN ({quoted})")
     accounts = []
     for r in _d1(sql, remote):
         enc = r.get("password_enc") or ""
@@ -576,6 +835,7 @@ def load_db_accounts_by_login(logins, remote, key):
             "steam_user": r.get("login"),
             "steam_pass": pw,
             "email": r.get("email") or "",
+            "email_pass": _decrypt_mail_pass(r, key),
             "refresh_token": "",
             "client_id": "",
             "last_expired": None,
@@ -636,6 +896,8 @@ def create_driver(chrome_path):
         opts.add_argument("--window-size=1440,900")
         opts.add_argument("--no-sandbox")
         opts.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--remote-debugging-port=9222")
     opts.add_argument("--disable-popup-blocking")
     opts.add_experimental_option("prefs", {
         "credentials_enable_service": False,
@@ -825,7 +1087,7 @@ def steam_login(driver, acc):
         print(f"  [{label}] entered credentials")
         # Snapshot before submitting: Steam Guard may email a code, and we must
         # not resubmit one left over from an earlier attempt.
-        guard_before = _read_code_api(acc) if _can_use_mail_api(acc) else ""
+        guard_before = _read_code(acc, "login") if _can_read_code(acc) else ""
         submit_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         pass_input.send_keys(Keys.ENTER)
         print(f"  [{label}] submitted login")
@@ -839,10 +1101,12 @@ def steam_login(driver, acc):
 
         if _is_steam_guard_prompt(driver):
             code = None
-            if _can_use_mail_api(acc):
-                print(f"  [{label}] Steam Guard prompt — asking /api/read-code for {acc['email']}...")
+            if _can_read_code(acc):
+                where = "/api/read-code" if _can_use_mail_api(acc) else _webmail_url(acc["email"])
+                print(f"  [{label}] Steam Guard prompt — reading {acc['email']} via {where}...")
                 # `guard_before` was snapshotted before the login was submitted.
-                code = poll_new_code(acc, guard_before) or None
+                # A sign-in wants the sign-in code, not a credential-change one.
+                code = poll_new_code(acc, guard_before, want="login") or None
             if not code and acc.get("refresh_token") and acc.get("client_id"):
                 print(f"  [{label}] Steam Guard prompt — polling Graph for code...")
                 try:
@@ -911,7 +1175,7 @@ def change_password(driver, acc, old_pass, new_pass):
 
         # Snapshot whatever code is already in the mailbox BEFORE asking Steam to
         # send a new one, so poll_new_code can tell the new mail from the old.
-        before_code = _read_code_api(acc)
+        before_code = _read_code(acc)
         if before_code:
             print(f"  [{label}] mailbox already holds code {before_code} — will wait for a different one")
 
@@ -944,13 +1208,16 @@ def change_password(driver, acc, old_pass, new_pass):
         # per-provider code extraction as the /mail UI, and works without outlook
         # tokens because the server can look the mailbox up by email.
         code = ""
-        if _can_use_mail_api(acc):
-            print(f"  [{label}] waiting on /api/read-code for {acc['email']}...")
-            code = poll_new_code(acc, before_code)
+        if _can_read_code(acc):
+            where = "/api/read-code" if _can_use_mail_api(acc) else _webmail_url(acc["email"])
+            print(f"  [{label}] waiting on {where} for {acc['email']}...")
+            # The wizard's mail is the credential-change one ("the code you need to
+            # change your Steam login credentials"), so that is what is asked for.
+            code = poll_new_code(acc, before_code, want="credential_change")
             if code:
-                print(f"  [{label}] got code {code} from the mail API")
-        elif acc.get("email") and not _is_graph_mailbox(acc.get("email")):
-            print(f"  [{label}] {acc['email']} is not outlook/hotmail — skipping the mail API")
+                print(f"  [{label}] got code {code} from {where}")
+        elif acc.get("email"):
+            print(f"  [{label}] {_no_mailbox_reason(acc)}")
 
         # Fallback: read Graph directly, if this account carries inline tokens.
         if not code and acc.get("refresh_token") and acc.get("client_id"):
@@ -1116,7 +1383,7 @@ def _wizard_identity_code(driver, acc, label):
 
     # Snapshot first: the endpoint returns "newest code in the mailbox" with no
     # timestamp, so without this a stale code gets submitted and burns the attempt.
-    before_code = _read_code_api(acc)
+    before_code = _read_code(acc)
     if before_code:
         print(f"  [{label}] mailbox already holds code {before_code} — will wait for a different one")
 
@@ -1142,13 +1409,14 @@ def _wizard_identity_code(driver, acc, label):
         return "NO_ENTERCODE"
 
     code = ""
-    if _can_use_mail_api(acc):
-        print(f"  [{label}] waiting on /api/read-code for {acc['email']}...")
-        code = poll_new_code(acc, before_code)
+    if _can_read_code(acc):
+        where = "/api/read-code" if _can_use_mail_api(acc) else _webmail_url(acc["email"])
+        print(f"  [{label}] waiting on {where} for {acc['email']}...")
+        code = poll_new_code(acc, before_code, want="credential_change")
         if code:
-            print(f"  [{label}] got code {code} from the mail API")
-    elif acc.get("email") and not _is_graph_mailbox(acc.get("email")):
-        print(f"  [{label}] {acc['email']} is not outlook/hotmail — skipping the mail API")
+            print(f"  [{label}] got code {code} from {where}")
+    elif acc.get("email"):
+        print(f"  [{label}] {_no_mailbox_reason(acc)}")
 
     if not code and acc.get("refresh_token") and acc.get("client_id"):
         print(f"  [{label}] mail API had nothing; polling Graph directly...")
@@ -1229,7 +1497,7 @@ def change_email(driver, acc, new_email, new_mail_acc):
 
         # Snapshot the NEW mailbox before Steam is asked to mail it, for the same
         # stale-code reason as above.
-        before_new = _read_code_api(new_mail_acc)
+        before_new = _read_code(new_mail_acc)
         if not _submit_wizard_form(driver, field):
             return "NO_SUBMIT"
         print(f"  [{label}] submitted new address; Steam should now mail {new_email}")
@@ -1237,11 +1505,13 @@ def change_email(driver, acc, new_email, new_mail_acc):
 
         # Step 3: confirm with the code sent to the NEW address.
         code = ""
-        if _can_use_mail_api(new_mail_acc):
-            print(f"  [{label}] waiting on /api/read-code for the NEW mailbox {new_email}...")
-            code = poll_new_code(new_mail_acc, before_new)
-        elif not _is_graph_mailbox(new_email):
-            print(f"  [{label}] {new_email} is not outlook/hotmail — the confirmation "
+        if _can_read_code(new_mail_acc):
+            where = ("/api/read-code" if _can_use_mail_api(new_mail_acc)
+                     else _webmail_url(new_email))
+            print(f"  [{label}] waiting on {where} for the NEW mailbox {new_email}...")
+            code = poll_new_code(new_mail_acc, before_new, want="credential_change")
+        else:
+            print(f"  [{label}] {_no_mailbox_reason(new_mail_acc)} — the confirmation "
                   f"code cannot be read automatically")
         if not code:
             try:
@@ -1380,9 +1650,14 @@ def main():
             print(f"--mode email changes ONE account at a time; {len(accounts)} selected.")
             print("Pick one with --account <login>.")
             sys.exit(1)
-        if not _is_graph_mailbox(new_email):
-            print(f"note: {new_email} is not outlook/hotmail, so Steam's confirmation "
-                  f"code cannot be read automatically — you will be prompted for it.")
+        if not _is_graph_mailbox(new_email) and not _webmail_url(new_email):
+            print(f"note: {new_email} is neither outlook/hotmail nor a known webmail "
+                  f"host, so Steam's confirmation code cannot be read automatically "
+                  f"— you will be prompted for it.")
+        elif _webmail_url(new_email) and not new_mail_password:
+            print(f"note: {new_email} is read over its webmail, which needs its "
+                  f"password — pass --new-email-password to read the confirmation "
+                  f"code automatically.")
 
     done = set() if (force or account_logins) else load_done(result_file)
     todo = [a for a in accounts if a["steam_user"] not in done]
@@ -1461,6 +1736,9 @@ def main():
                 new_mail_acc = {
                     "steam_user": user,
                     "email": new_email,
+                    # --new-email-password doubles as the webmail credential, so a
+                    # qinianstm.com destination can be confirmed without a prompt.
+                    "email_pass": new_mail_password,
                     "refresh_token": "",
                     "client_id": "",
                 }
