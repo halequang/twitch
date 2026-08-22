@@ -3,6 +3,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { generateAdvice } from './src/lib/advisor.js';
 import { AUTH_PATHS, handleAuthRequest } from './src/lib/auth.js';
 import { handleRentRequest } from './src/lib/rent-routes.js';
+import { ADMIN_PREFIX, handleAdminRequest } from './src/lib/admin.js';
+import { readSession } from './src/lib/auth.js';
 
 // Parse .dev.vars (wrangler's local-secrets file, KEY=value) so `npm run dev`
 // can reach Gemini with the same key used by `wrangler dev`.
@@ -312,6 +314,65 @@ const rentalDevMiddleware = {
   },
 };
 
+// Serves /api/admin/* in the Astro dev server. Without it the panel's own fetches
+// answer with the HTML 404 page, #adminPanel never unhides, and the whole thing
+// looks broken — filters, tables and all — for want of a route.
+const adminDevMiddleware = {
+  name: 'admin-dev-api',
+  configureServer(server) {
+    server.middlewares.use((req, res, next) => {
+      const [rawPath, rawQuery] = (req.url || '').split('?');
+      const path = rawPath.replace(/\/+$/, '') || '/';
+      if (!path.startsWith(ADMIN_PREFIX)) return next();
+
+      let raw = '';
+      req.on('data', (chunk) => (raw += chunk));
+      req.on('end', async () => {
+        const send = (status, payload) => {
+          res.statusCode = status;
+          res.setHeader('content-type', 'application/json; charset=utf-8');
+          res.setHeader('cache-control', 'no-store');
+          res.end(JSON.stringify(payload));
+        };
+
+        let body = null;
+        if (raw && req.method !== 'GET') {
+          try {
+            body = JSON.parse(raw);
+          } catch {
+            return send(400, { error: 'invalid_json' });
+          }
+        }
+
+        try {
+          const env = { ...process.env, ...loadDevVars() };
+          const db = await localD1();
+          if (!db) {
+            return send(503, {
+              error: 'admin_requires_local_d1',
+              hint: 'No local D1 found. Run `npx wrangler dev --local` once to create it.',
+            });
+          }
+          env.DB = db;
+
+          const user = await readSession(req.headers.cookie, env.SESSION_SECRET);
+          const { status, body: out } = await handleAdminRequest(env, {
+            path,
+            method: req.method,
+            body,
+            user,
+            query: Object.fromEntries(new URLSearchParams(rawQuery || '')),
+          });
+          send(status, out);
+        } catch (err) {
+          console.error(`[dev-admin] ${path} failed:`, err);
+          send(500, { error: 'dev_handler_failed', reason: String(err?.message || err) });
+        }
+      });
+    });
+  },
+};
+
 // Static .html files in public/ that need a clean URL. (/game is an Astro page
 // — the dev server already serves it at /game — so it is not listed here; the
 // Worker maps it to the built /game.html in production.)
@@ -347,6 +408,12 @@ export default defineConfig({
   build: { format: 'file' },
   vite: {
     server: { fs: { allow: ['..'] } },
-    plugins: [advisorDevMiddleware, authDevMiddleware, rentalDevMiddleware, cleanUrlMiddleware],
+    plugins: [
+      advisorDevMiddleware,
+      authDevMiddleware,
+      rentalDevMiddleware,
+      adminDevMiddleware,
+      cleanUrlMiddleware,
+    ],
   },
 });
