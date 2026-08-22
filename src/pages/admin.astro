@@ -175,6 +175,20 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     <div class="listbar">
       <input type="search" id="ordersQ" class="listbar-q"
              placeholder="Tìm theo mã đơn, email khách hoặc tên tài khoản…" />
+      <!-- Wider than the statuses an admin may SET: seeing the pending and
+           payment_expired orders is the common reason to filter at all. -->
+      <select id="ordersStatus" class="listbar-filter" aria-label="Lọc theo trạng thái đơn">
+        <option value="">Mọi trạng thái</option>
+        <option value="pending">pending</option>
+        <option value="active">active</option>
+        <option value="extended">extended</option>
+        <option value="expired">expired</option>
+        <option value="cancelled">cancelled</option>
+        <option value="payment_expired">payment_expired</option>
+        <option value="awaiting_stock">awaiting_stock</option>
+        <option value="sold">sold</option>
+        <option value="error">error</option>
+      </select>
       <span class="listbar-count" id="ordersCount"></span>
       <span class="listbar-pager">
         <button type="button" class="mini" id="ordersPrev">‹ Trước</button>
@@ -1550,15 +1564,15 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
    * unlike the search box. Both reset to page 1, because staying on page 4 of a
    * narrower result set lands on an empty table that looks like a bug.
    */
-  function wireAccountFilters() {
+  function wireFilters(name, pairs) {
     const apply = (key, value, select) => {
-      views.accounts[key] = value;
-      views.accounts.page = 1;
+      views[name][key] = value;
+      views[name].page = 1;
       // '' means no filter; the attribute drives the highlight.
       if (select) select.dataset.any = value === '' ? '1' : '0';
-      loadAccountsPage().catch((err) => notice('Không tải được danh sách: ' + err.message, true));
+      LOADERS[name]().catch((err) => notice('Không tải được danh sách: ' + err.message, true));
     };
-    for (const [id, key] of [['accountsStatus', 'status'], ['accountsGroup', 'group']]) {
+    for (const [id, key] of pairs) {
       const select = el(id);
       if (!select) continue;
       select.dataset.any = '1';
@@ -1612,7 +1626,8 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
   wireList('accounts');
   wireList('orders');
-  wireAccountFilters();
+  wireFilters('accounts', [['accountsStatus', 'status'], ['accountsGroup', 'group']]);
+  wireFilters('orders', [['ordersStatus', 'status']]);
 
   el('reportsAll')?.addEventListener('change', loadReports);
 

@@ -108,6 +108,22 @@ const now = () => Math.floor(Date.now() / 1000);
 // payOS's to own, and forcing an order back to it would orphan a paid payment.
 const ORDER_STATUSES = ['active', 'expired', 'cancelled', 'awaiting_stock'];
 
+// Every status an order row can actually hold, for the list filter. Deliberately
+// wider than ORDER_STATUSES, which is what an admin may SET by hand: you can want
+// to see the pending and payment_expired orders without being allowed to create
+// one, and a filter that silently rejected them would look broken.
+const ORDER_STATUS_FILTERS = [
+  'pending',
+  'active',
+  'extended',
+  'expired',
+  'cancelled',
+  'payment_expired',
+  'awaiting_stock',
+  'sold',
+  'error',
+];
+
 function bad(error, status = 400, extra = {}) {
   return { status, body: { error, ...extra } };
 }
@@ -472,24 +488,32 @@ async function listAllOrders(env, actor, query) {
       : [likeTerm(q), likeTerm(q)]
     : [];
 
+  // Validated against a list rather than bound blindly: an unknown status would
+  // otherwise return an empty table, which reads as "no such orders" instead of
+  // "you asked for something that cannot exist".
+  const rawStatus = typeof query?.status === 'string' ? query.status.trim() : '';
+  if (rawStatus && !ORDER_STATUS_FILTERS.includes(rawStatus)) return { error: 'bad_status' };
+  const statusFilter = rawStatus ? ' AND o.status = ?' : '';
+  const statusBinds = rawStatus ? [rawStatus] : [];
+
   const counted = await env.DB.prepare(
     `SELECT COUNT(*) AS n
        FROM orders o
        LEFT JOIN steam_accounts a ON a.id = o.account_id
-      WHERE 1 = 1${where.sql}${search}`
+      WHERE 1 = 1${where.sql}${search}${statusFilter}`
   )
-    .bind(...where.binds, ...searchBinds)
+    .bind(...where.binds, ...searchBinds, ...statusBinds)
     .first();
 
   const rows = await env.DB.prepare(
     `SELECT o.*, a.login AS account_login, a.group_id AS account_group
        FROM orders o
        LEFT JOIN steam_accounts a ON a.id = o.account_id
-      WHERE 1 = 1${where.sql}${search}
+      WHERE 1 = 1${where.sql}${search}${statusFilter}
       ORDER BY o.created_at DESC
       LIMIT ? OFFSET ?`
   )
-    .bind(...where.binds, ...searchBinds, limit, offset)
+    .bind(...where.binds, ...searchBinds, ...statusBinds, limit, offset)
     .all();
   const meta = pageMeta({ total: Number(counted?.n ?? 0), limit, page });
 
@@ -1014,8 +1038,9 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
   }
 
   if (path === '/api/admin/orders' && method === 'GET') {
-    const { items, meta } = await listAllOrders(env, actor, query);
-    return { status: 200, body: { orders: items, page: meta } };
+    const listed = await listAllOrders(env, actor, query);
+    if (listed.error) return bad(listed.error, 400, { allowed: ORDER_STATUS_FILTERS });
+    return { status: 200, body: { orders: listed.items, page: listed.meta } };
   }
 
   // Rentals about to end, so the owner can rotate passwords / chase renewals
