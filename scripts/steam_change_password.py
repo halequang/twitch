@@ -191,8 +191,13 @@ REFRESH_TOKENS_FILE = "refresh_tokens.txt"
 # through _d1crypto.mjs so it byte-matches the worker's encryptSecret; D1 access
 # is via `wrangler d1 execute` run in TWITCH_DIR. --remote hits production D1
 # (default is the local miniflare D1).
-TWITCH_DIR = '/home/haleserver/fungame/twitch'
-# TWITCH_DIR = '/Users/lequangha/WebstormProjects/twitch'
+# TWITCH_DIR = '/home/haleserver/fungame/twitch'
+# The repo root, derived from this file so the script works from any checkout.
+# It was hardcoded to the author's Mac, which meant that on the server .dev.vars was
+# never found: ACCOUNT_ENC_KEY and MAIL_API_KEY silently came back empty unless they
+# happened to be exported. TWITCH_DIR still overrides, for an unusual layout.
+TWITCH_DIR = os.environ.get("TWITCH_DIR") or os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))
 D1_DB_NAME = "fungaming-rentals"
 _ENC_HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_d1crypto.mjs")
 
@@ -315,6 +320,8 @@ def _is_graph_mailbox(email):
 
 def _can_use_mail_api(acc):
     """Whether it is worth calling /api/read-code for this account at all."""
+    if _mail_auth_is_broken():
+        return False
     return bool(_load_mail_api_key()) and _is_graph_mailbox(acc.get("email"))
 
 
@@ -332,6 +339,32 @@ def _load_mail_api_key():
             if m:
                 return m.group(1).strip().strip('"').strip("'")
     return ""
+
+
+# An auth failure from the mail API is not transient, and it is identical for every
+# account in the run. Recorded once so nothing waits 120 seconds for a key that will
+# keep being refused, three accounts in a row.
+_MAIL_AUTH_FAILED = {"hit": False}
+
+
+def _mail_auth_is_broken():
+    return _MAIL_AUTH_FAILED["hit"]
+
+
+def _note_mail_auth_failure(detail):
+    if _MAIL_AUTH_FAILED["hit"]:
+        return
+    _MAIL_AUTH_FAILED["hit"] = True
+    url = os.environ.get("MAIL_API_URL", "https://poe-mail.fungamingvn.workers.dev/api/read-code")
+    print(f"  x  mail code API refused the key ({detail}). Not retrying: this is not "
+          f"a timing problem.")
+    print(f"     Two causes look the same from here —")
+    print(f"       1. MAIL_API_KEY does not match that worker's secret;")
+    print(f"       2. /api/read-code is not deployed, and an unknown route on that")
+    print(f"          worker answers 401 as well.")
+    print(f"     Tell them apart with a request for a route that must exist:")
+    print(f"       curl -s -o /dev/null -w '%{{http_code}}\\n' {url}")
+    print(f"     Until it is fixed, codes have to be typed in by hand.")
 
 
 def _read_code_api(acc):
@@ -360,7 +393,11 @@ def _read_code_api(acc):
                          acc.get("refresh_token") or None,
                          acc.get("client_id") or None) or ""
     except Exception as e:
-        print(f"  [{acc.get('steam_user')}] read-code API: {e}")
+        text = str(e)
+        if "401" in text or "403" in text or "unauthor" in text.lower():
+            _note_mail_auth_failure(text)
+        else:
+            print(f"  [{acc.get('steam_user')}] read-code API: {e}")
         return ""
 
 
@@ -584,6 +621,9 @@ def poll_new_code(acc, before_code, max_wait=GUARD_CODE_WAIT_SEC,
             code = _read_code_api(acc)
             if code and code != before_code:
                 return code
+            # A refused key will still be refused in three seconds.
+            if _mail_auth_is_broken():
+                return ""
             time.sleep(poll_interval)
         return ""
 
