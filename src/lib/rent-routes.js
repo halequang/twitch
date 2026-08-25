@@ -15,11 +15,12 @@ import { readSession } from './auth.js';
 import { createCheckout, listOrders, listPlans, rentalsConfigured } from './rentals.js';
 import { isMerchantConfigError } from './payos.js';
 import { listOwnReports, submitReport } from './reports.js';
+import { listOwnGameRequests, submitGameRequest } from './game-requests.js';
 import { requestSteamCode } from './steamcode.js';
 
 export const RENT_PREFIX = '/api/rent/';
 
-export async function handleRentRequest({ path, method, body, cookie, origin, env }) {
+export async function handleRentRequest({ path, method, body, cookie, origin, env, query }) {
   if (!rentalsConfigured(env)) return { status: 503, body: { error: 'rentals_not_configured' } };
 
   const user = () => readSession(cookie, env.SESSION_SECRET);
@@ -32,7 +33,10 @@ export async function handleRentRequest({ path, method, body, cookie, origin, en
     // The stock figure is per-viewer: an account reserved for another customer, or
     // tagged for a plan, is free but not free to whoever is reading the page.
     const viewer = await user();
-    const catalogue = await listPlans(env, undefined, viewer?.email ?? null);
+    // Each game's page asks for its own catalogue. Undefined falls back to the
+    // default game, so a caller that predates multi-game keeps working.
+    const asked = query?.get?.('game') || undefined;
+    const catalogue = await listPlans(env, asked, viewer?.email ?? null);
     return catalogue ? { status: 200, body: catalogue } : { status: 404, body: { error: 'unknown_game' } };
   }
 
@@ -53,6 +57,8 @@ export async function handleRentRequest({ path, method, body, cookie, origin, en
         buyOrderCode: body?.buyOrderCode,
         // Move that rental onto a dearer plan, charging the difference.
         upgradeOrderCode: body?.upgradeOrderCode,
+        // Rent ANOTHER game on the account that rental is already using.
+        addonOrderCode: body?.addonOrderCode,
         // How many accounts to rent in this one payment (1..10).
         quantity: body?.quantity,
       });
@@ -81,7 +87,13 @@ export async function handleRentRequest({ path, method, body, cookie, origin, en
     if (!who) return { status: 401, body: { error: 'unauthorized' } };
     return {
       status: 200,
-      body: { orders: await listOrders(env, who), reports: await listOwnReports(env, who) },
+      body: {
+        orders: await listOrders(env, who),
+        reports: await listOwnReports(env, who),
+        // The caller's own "please add this game" asks, so the page can show what
+        // they requested and whatever the shop replied.
+        gameRequests: await listOwnGameRequests(env, who),
+      },
     };
   }
 
@@ -94,6 +106,16 @@ export async function handleRentRequest({ path, method, body, cookie, origin, en
     const who = await user();
     if (!who) return { status: 401, body: { error: 'unauthorized' } };
     return requestSteamCode(env, who, body?.orderCode);
+  }
+
+  // "Please rent this game too." Signed-in only, like every other write here: an
+  // anonymous demand counter is a number anybody can inflate.
+  if (path === '/api/rent/request-game') {
+    const wrong = needPost();
+    if (wrong) return wrong;
+    const who = await user();
+    if (!who) return { status: 401, body: { error: 'unauthorized' } };
+    return submitGameRequest(env, who, { gameName: body?.gameName, note: body?.note });
   }
 
   // A renter reporting a problem with the account they hold — most importantly

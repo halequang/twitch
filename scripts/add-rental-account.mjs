@@ -29,7 +29,11 @@
  *   --password  <string>   Steam password (single mode)
  *   --file      <path>     Bulk import from a text file
  *   --note      <string>   Renter-facing message shown with the credentials
- *   --game      <id>       Defaults to the-isle
+ *   --game      <id>       The account's home game. Defaults to the-isle
+ *   --games     <a,b>      Every game this login's library covers, comma-separated.
+ *                          Defaults to just --game. An account tagged with two games
+ *                          sits in both pools and can be rented for either — one
+ *                          customer at a time, since renting hands over the login.
  *   --remote               Write to the deployed D1 (default: local)
  *   --sql-only             Print the SQL instead of running wrangler
  *   --dry-run              Parse and report only; touch nothing
@@ -127,6 +131,25 @@ export function parseAccountLine(rawLine) {
     // account. internal_note is admin-only, so nothing here reaches a renter.
     internalNote: [noteField, internalNote].filter(Boolean).join(' · ') || null,
   };
+}
+
+/**
+ * The pool memberships for a login, written after the account row itself.
+ *
+ * Keyed on the login rather than on an id because the insert above may have been an
+ * OR IGNORE that changed nothing — the id is not known here, and looking it up by
+ * (game, login) is what makes re-running the import idempotent.
+ */
+function membershipSql(account, { game, games }) {
+  const list = (games && games.length ? games : [game]);
+  return list
+    .map(
+      (g) =>
+        `INSERT OR IGNORE INTO steam_account_games (account_id, game) ` +
+        `SELECT id, ${sqlQuote(g)} FROM steam_accounts ` +
+        `WHERE game = ${sqlQuote(game)} AND login = ${sqlQuote(account.login)};`
+    )
+    .join('\n');
 }
 
 function insertSql(account, { game, note, passwordEnc, emailPasswordEnc, replace }) {
@@ -234,6 +257,15 @@ if (args.dryRun) {
   process.exit(0);
 }
 
+// --games the-isle,poe2 — every pool this login belongs to. Home game included
+// whether or not it was listed, since that column is what the row is keyed by.
+const memberGames = [
+  ...new Set([
+    args.game,
+    ...String(args.games || '').split(',').map((g) => g.trim()).filter(Boolean),
+  ]),
+];
+
 const statements = [];
 for (const account of unique) {
   statements.push(
@@ -245,6 +277,9 @@ for (const account of unique) {
       emailPasswordEnc: account.emailPassword ? await encryptSecret(account.emailPassword, encKey) : null,
     })
   );
+  // A separate statement rather than part of the insert: the insert may have been an
+  // OR IGNORE that changed nothing, and the memberships still have to be right.
+  statements.push(membershipSql(account, { game: args.game, games: memberGames }));
 }
 
 if (args.sqlOnly) {

@@ -472,6 +472,173 @@ def _hidden_text(driver, selectors, limit=300):
     return ""
 
 
+def on_message_list(driver):
+    """True when the browser is showing the folder listing (not one message)."""
+    try:
+        return bool(driver.find_elements(By.CSS_SELECTOR, "[id^=rcmrow]"))
+    except Exception:
+        return False
+
+
+def goto_inbox(driver, url):
+    """Navigate to the inbox listing. A full page load — call it sparingly."""
+    base = url.rstrip("/").split("?")[0]
+    driver.get(f"{base}/?_task=mail&_mbox=INBOX")
+
+
+def check_new_mail(driver):
+    """Ask Roundcube to fetch new mail, without reloading the page.
+
+    This is the whole reason a poll can be cheap: `rcmail.command('checkmail')` is
+    the same thing its own refresh button does, so the message list updates in place.
+    Reloading the inbox instead cost a full page load per check, and re-opening the
+    newest messages to look for a code cost three more — about twenty seconds of work
+    to answer "has anything arrived yet".
+
+    Returns True if the command was issued.
+    """
+    try:
+        return bool(driver.execute_script(
+            """
+            try {
+              if (window.rcmail && rcmail.command) { rcmail.command('checkmail'); return true; }
+            } catch (e) { /* fall through */ }
+            return false;
+            """
+        ))
+    except Exception:
+        return False
+
+
+# Reading a message body out of Roundcube, correctly.
+#
+# Three traps, all hit on real Steam mail:
+#   · There is not always an iframe. This install renders the HTML part inline in
+#     #messagebody, so an iframe-only reader found nothing and fell through to a
+#     textContent fallback.
+#   · textContent INCLUDES the text of <style> elements. The mail carries its own
+#     stylesheet, which Roundcube rewrites to "#message-htmlpart1 div.rcmBody
+#     { padding: 0 !important; … }", and that CSS then filled the whole length cap —
+#     so the body looked like a stylesheet and the code in the real text never made
+#     it in. innerText is the right property: it is what is RENDERED, and a <style>
+#     block is not.
+#   · A detached clone has no layout, so innerText on one is empty and any code that
+#     falls back to textContent lands straight back in the previous trap. Hence the
+#     live element, with a TreeWalker that skips style/script as the fallback.
+# A RAW string: this JS contains \n as an escape for JavaScript, and in a normal
+# Python string Python would consume it and put a real newline inside the JS string
+# literal — which is a syntax error the browser reports as "Invalid or unexpected
+# token", leaving every body empty.
+MESSAGE_TEXT_JS = r"""
+function visibleText(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      const p = n.parentElement;
+      if (!p) return NodeFilter.FILTER_REJECT;
+      const tag = p.tagName;
+      if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const out = [];
+  let n;
+  while ((n = walker.nextNode())) {
+    const s = (n.nodeValue || '').trim();
+    if (s) out.push(s);
+  }
+  return out.join('\n');
+}
+const el = arguments[0];
+if (!el) return '';
+const rendered = (el.innerText || '').trim();
+return rendered || visibleText(el);
+"""
+
+# Where a message body can live, in the order worth trying.
+BODY_SELECTORS = ("#messagebody", ".message-part", "#messagecontent", "#messageframe")
+
+
+def _element_text(driver, element):
+    """Rendered text of one element, without its stylesheet."""
+    try:
+        return _lines(driver.execute_script(MESSAGE_TEXT_JS, element) or "")
+    except Exception:
+        return ""
+
+
+def _message_text(driver, timeout=8):
+    """The open message's readable text, waiting for it to render.
+
+    Tries the iframe first (other Roundcube skins use one) and the inline body next.
+    Polled rather than read once because the part is filled in after the page's own
+    load event, so an immediate read gets an empty or half-built document.
+    """
+    deadline = time.time() + timeout
+    best = ""
+    while True:
+        frames = driver.find_elements(By.CSS_SELECTOR, "#messagecontframe, iframe#messagecontframe")
+        if frames:
+            try:
+                driver.switch_to.frame(frames[0])
+                body = driver.find_elements(By.TAG_NAME, "body")
+                text = _element_text(driver, body[0]) if body else ""
+            except Exception:
+                text = ""
+            finally:
+                driver.switch_to.default_content()
+            if len(text) > len(best):
+                best = text
+        else:
+            for selector in BODY_SELECTORS:
+                found = driver.find_elements(By.CSS_SELECTOR, selector)
+                if not found:
+                    continue
+                text = _element_text(driver, found[0])
+                if len(text) > len(best):
+                    best = text
+                if len(best) >= 80:
+                    break
+        # Enough to be real content rather than a placeholder: Steam's shortest mail
+        # is a couple of sentences, so this settles on the first proper read.
+        if len(best) >= 80 or time.time() >= deadline:
+            return best
+        time.sleep(0.4)
+
+
+def read_email(driver, url, uid, body_chars=1500):
+    """One message, by uid: who/what/when plus the body with its line breaks kept."""
+    base = url.rstrip("/").split("?")[0]
+    driver.get(f"{base}/?_task=mail&_mbox=INBOX&_uid={uid}&_action=show")
+
+    subject = _first_text(driver, ("#messageheader .subject", ".header-title", "h2.subject", ".subject"))
+    sender = _first_text(driver, ("#messageheader .from .adr", ".header-from", ".from .adr", ".adr"))
+    # The visible summary line reads "在 2026-08-22 16:20 来自 Steam Team"; the bare
+    # date sits in the collapsed Details panel, hence the textContent fallback.
+    when = _first_text(driver, ("#messageheader .date", ".header.date", ".header-date"), limit=120)
+    if not when:
+        when = _hidden_text(driver, (".header.date", "#messageheader .date", ".date"), limit=120)
+    if not when:
+        when = _first_text(driver, (".header-summary",), limit=120)
+
+    # Line breaks are KEPT. classifyCode splits the body into sentences on newlines
+    # and CJK terminators to strip advice ("if this wasn't you, reset your password")
+    # before deciding what the mail is for — so flattening the body to one line left
+    # the advice in the text and had a Vietnamese sign-in notice classified as a
+    # credential change.
+    body = _message_text(driver, timeout=8)
+
+    return {
+        "uid": uid,
+        "subject": subject or "(no subject)",
+        "from": sender or "(unknown sender)",
+        "date": when or "(no date shown)",
+        # Newlines intact for the classifier; the flat copy is for printing.
+        "body": body[:body_chars],
+        "body_flat": " ".join(body.split())[:body_chars],
+        "url": driver.current_url,
+    }
+
+
 def read_newest_emails(driver, url, timeout, body_chars, count=1):
     """Open the newest `count` messages and pull out who/what/when/body for each.
 
@@ -503,49 +670,9 @@ def read_newest_emails(driver, url, timeout, body_chars, count=1):
     listed = len(uids)
     mails = []
     for uid in sorted(uids, reverse=True)[: max(1, count)]:
-        driver.get(f"{base}/?_task=mail&_mbox=INBOX&_uid={uid}&_action=show")
-
-        subject = _first_text(driver, ("#messageheader .subject", ".header-title", "h2.subject", ".subject"))
-        sender = _first_text(driver, ("#messageheader .from .adr", ".header-from", ".from .adr", ".adr"))
-        # The visible summary line reads "在 2026-08-22 16:20 来自 Steam Team"; the bare
-        # date sits in the collapsed Details panel, hence the textContent fallback.
-        when = _first_text(driver, ("#messageheader .date", ".header.date", ".header-date"), limit=120)
-        if not when:
-            when = _hidden_text(driver, (".header.date", "#messageheader .date", ".date"), limit=120)
-        if not when:
-            when = _first_text(driver, (".header-summary",), limit=120)
-
-        # The body lives in an iframe in the elastic skin; #messagebody is the
-        # non-iframe fallback.
-        # Line breaks are KEPT here. classifyCode splits the body into sentences on
-        # newlines and CJK terminators to strip advice ("if this wasn't you, reset
-        # your password") before deciding what the mail is for — so flattening the
-        # body to one line, as an earlier version did, left the advice in the text
-        # and had a Vietnamese sign-in notice classified as a credential change.
-        body = ""
-        frames = driver.find_elements(By.CSS_SELECTOR, "#messagecontframe, iframe#messagecontframe")
-        if frames:
-            try:
-                driver.switch_to.frame(frames[0])
-                body = _lines(driver.find_element(By.TAG_NAME, "body").text)
-            except Exception:
-                body = ""
-            finally:
-                driver.switch_to.default_content()
-        if not body:
-            body = _lines(_hidden_text(driver, ("#messagebody", ".message-part", "#messagecontent"), limit=body_chars))
-
-        mails.append({
-            "uid": uid,
-            "count": listed,
-            "subject": subject or "(no subject)",
-            "from": sender or "(unknown sender)",
-            "date": when or "(no date shown)",
-            # Newlines intact for the classifier; the flat copy is for printing.
-            "body": body[:body_chars],
-            "body_flat": " ".join(body.split())[:body_chars],
-            "url": driver.current_url,
-        })
+        mail = read_email(driver, url, uid, body_chars)
+        mail["count"] = listed
+        mails.append(mail)
     return mails, None
 
 

@@ -485,6 +485,152 @@ payOS cannot do from here.
   week is a legitimate extension whose plan differs from its parent's. Needs
   `migrations/0013_order_upgrade.sql`, which `npm run deploy` applies first.
 
+### "Please rent this game too"
+
+A form at the bottom of each rental page (below the plans — it is for the customer
+who did NOT find what they came for) posts to `POST /api/rent/request-game`, and the
+asks land in `game_requests` (`migrations/0017_game_requests.sql`).
+
+- **A table, not a Telegram ping**, for the same reason `account_reports` is one: a
+  chat message nobody read is lost. And these need to be *counted* — the useful
+  question is not who asked but which game the most customers want next.
+- **`game_key` is the counting key**: the name lower-cased with everything but
+  letters and digits stripped, so "PoE 2", "poe2" and "Poe-2" are one game. Both are
+  stored — the raw text is what a human reads, the key is what SQL groups by.
+- **One row per (customer, game)**, enforced by a unique index, so a second ask is an
+  edit rather than a second vote. The tally counts people, not button presses. A
+  resubmitted note is only ever filled in, never blanked: the form posts both fields,
+  so resubmitting from a fresh page would otherwise throw away what they wrote.
+- **A game already in the catalogue is refused with where to find it**
+  (`already_rentable` → name + path), which is better news than filing demand for
+  something they can rent right now.
+- **Signed-in only**, and at most 5 open asks per customer: an anonymous demand
+  counter is a number anybody can inflate.
+- **The reply is per game, not per asker.** "We added Rust" is true for everyone who
+  asked for Rust; making the owner answer each one separately would mean most never
+  hear back. `POST /api/admin/game-requests/reply {gameKey, status, reply}` updates
+  every row for that game, and each asker sees the status and the reply on their own
+  rental page, next to how many others want it.
+- Owner-only on the admin side — a manager's scope is their own accounts, and a game
+  nobody stocks yet belongs to no group. The card is simply hidden for them.
+
+### One account, several games
+
+A Steam account owns a library, so the same login can serve more than one game's
+pool. Membership lives in `steam_account_games` (`migrations/0014_account_games.sql`);
+`steam_accounts.game` stays as the account's *home* game, because it is half of
+`idx_accounts_login (game, login)` — the unique index that stops a login being
+imported twice — and it is what the admin list shows.
+
+- **Allocation asks membership, not the column.** `countStock`, `claimAccount` and the
+  stock forecast all use `gameMatchSql()`, an `EXISTS` over that table. Tag an account
+  with a second game and it appears in both pools immediately.
+- **An account is still only ever out with ONE customer.** Renting means handing over
+  the login. Claiming it for one game sets its status to `rented`, which removes it
+  from every other pool at the same moment — so "many games" decides *eligibility*,
+  never concurrent renters.
+- **Tag accounts** with `scripts/add-rental-account.mjs --game the-isle --games the-isle,poe2`,
+  or `POST /api/admin/accounts/games {id, games:[…]}`, which replaces the whole set
+  atomically and always keeps the home game (an account in no pool is invisible to
+  every query and looks like it has vanished). The admin *panel* has no control for
+  this yet — the endpoint and the script are the ways in.
+
+### Refunded orders
+
+`refunded` is a status an admin sets by hand (`PATCH /api/admin/orders/<code>`), and
+it is deliberately **not** a flavour of `cancelled`: a cancelled order was never
+paid, a refunded one was and the money went back. Telling them apart is the
+difference between "this customer never bought" and "this customer bought and we
+gave it back".
+
+- **It releases the account.** The customer is not renting any more, so the login
+  returns to the pool — through the same guarded release every ending order uses, so
+  it will NOT be freed while something else is still live on it (a second-game
+  rental). Verified both ways: refunding a lone rental flipped its account to
+  `available`; refunding one of two rentals on the same login left it `rented` with
+  the sibling untouched.
+- **It stops counting as income**, in all three places that sum money: the owner
+  summary, the manager summary and the daily report. `paid_at` is deliberately KEPT —
+  it is a fact about what happened — so the sums exclude the status
+  (`NON_REVENUE_STATUSES`) rather than erasing the timestamp and losing the history.
+  The panel shows "Đã hoàn tiền" beside the revenue tile, so a drop has an
+  explanation on the page.
+- **It cannot be re-fulfilled.** A redelivered payOS webhook naming a refunded order
+  would otherwise fall through to the claim path and take a fresh account for a
+  rental that has been paid back; `fulfilSingle` treats it as final, like `sold` and
+  `upgraded`.
+- The customer's page labels it "Đã hoàn tiền", announces it if a refund lands while
+  the page is open, and then hides the row with the other finished ones — leaving it
+  visible invites "where is my account?" for a rental that is over.
+
+### orders.note
+
+A shop-side note on an order: why it was refunded, what was agreed, which
+conversation it came from. Admin-facing only, like `steam_accounts.internal_note` —
+it is never sent to the customer. Editable on its own in the order editor, so
+recording a reason does not require touching the status again, and sent only when
+actually changed so an untouched note is not rewritten on every save.
+
+Needs `migrations/0015_order_refund_note.sql`.
+
+### What a rental can be extended with
+
+An extension adds hours to the rental the customer already holds, on the **same
+login** — so it can only ever be a plan that login can serve. The VOIP week requires
+a `no_ban` account (`PLAN_REQUIRED_TAGS`), so extending a 1 ngày or plain 1 tuần
+rental with it would sell perks the account cannot deliver: the hours would land, the
+VOIP would not.
+
+- **The route from those plans to the VOIP week is the upgrade**, which swaps in a
+  vetted account. So the refusal names it: `extend_needs_tagged_account` carries
+  `requires` and `upgradable`, and the page says "bấm Nâng cấp gói" rather than just
+  "no".
+- **The button is disabled, not hidden.** A customer on 1 ngày looking for the VOIP
+  week should see that it exists and learn how to get it. `/api/rent/orders` sends
+  `extendPlans: [{id, allowed, requires, upgradable}]` per rental, because the page
+  cannot see an account's tags. A response without that field is treated as
+  "everything allowed", so a stale cache degrades to the old behaviour rather than to
+  no buttons at all.
+- **Enforced server-side too** — a disabled button is not a closed endpoint. Verified:
+  extending a 1-day rental with `isle-7d-voip` answers 409 with `requires:["no_ban"]`
+  and `upgradable:true`, while the same rental extending by `isle-7d`, and a VOIP
+  rental extending by `isle-7d-voip`, both pass.
+- **Second-game rentals follow the same rule**, since they also run on the held
+  login — but there the plan is filtered out of the offer rather than shown disabled,
+  because there is no upgrade route to point at.
+
+### Renting another game on the login you already hold
+
+The one case where two games genuinely coexist: the customer holding an account
+rents a second game on it. `orders.addon_of` points at the rental whose account is
+borrowed, and the child order carries its own game, plan and expiry.
+
+- **It claims nothing from the pool.** The account is already out with this customer
+  and the game is one its library covers, so there is no stock to run out of — which
+  is why there is no availability check anywhere in that path.
+- **Both rentals run on their own clock.** Either can lapse or be extended without
+  touching the other, and one rental per game per account is enforced (`game_already_rented`).
+- **The library is re-checked at fulfilment**, not trusted from checkout: an admin can
+  edit an account's games while the customer is paying, and renting a game the login
+  cannot launch is the one outcome this must never produce.
+- **The expiry sweep now frees an account only when nothing else holds it.** This is
+  the change that makes the feature safe: with two rentals on one login, freeing it
+  when the *first* lapses would put a login somebody is still using back in the pool,
+  to be handed to a second customer with the same password. Verified both ways — the
+  first expiry keeps the account `rented`, the last one releases it.
+
+### A second game in the catalogue (PoE 2)
+
+`GAMES.poe2` sells 1 ngày 20k / 1 tuần 50k / buy-out 190k. One page serves every
+game: `src/pages/thuegame/[game].astro` builds a URL per catalogue entry from its
+`path`, so `/thuegame/theisle` is unchanged and `/thuegame/poe2` came for free. Copy
+that differs per game — the flourish emoji, the palette, the VOIP warning — moved
+into the catalogue rather than the template.
+
+A plan id also names its own game (`gameOfPlan`), so `createCheckout` resolves the
+game from the plan instead of trusting the page to send a matching pair. Without it a
+PoE 2 plan would have been looked up under the default game and refused.
+
 ### Holding an account for one customer
 
 An account can be earmarked for a specific customer, so when they rent again they

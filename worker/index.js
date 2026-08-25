@@ -31,10 +31,16 @@ import { handleRentRequest } from "../src/lib/rent-routes.js";
 import { verifyWebhook } from "../src/lib/payos.js";
 import { ADMIN_PREFIX, handleAdminRequest } from "../src/lib/admin.js";
 import { notifyExpiredRentals } from "../src/lib/notify.js";
+import { GAMES, gameIds } from "../src/data/rental-plans.js";
 
 const ROUTES = {
   "/":          "/index.html",
-  "/thuegame/theisle": "/thuegame/theisle.html",
+  // One clean path per rental game, generated from the catalogue: adding a game
+  // there must not need an edit here as well, and a missing entry is a 404 on a
+  // page that built perfectly.
+  ...Object.fromEntries(
+    gameIds().map((id) => [GAMES[id].path, `${GAMES[id].path}.html`])
+  ),
   "/admin":     "/admin.html",
   "/skins":     "/skins.html",
   "/skins2":    "/skins2.html",
@@ -177,6 +183,8 @@ async function handleRent(request, env, url, path) {
     body,
     cookie: request.headers.get("cookie"),
     origin: url.origin,
+    // /api/rent/plans?game=… — each game's page asks for its own catalogue.
+    query: url.searchParams,
     env,
   });
   return json(out, status);

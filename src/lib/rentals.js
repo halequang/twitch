@@ -20,6 +20,7 @@ import {
   TAG_SEPARATORS,
   accountMeetsPlanTags,
   findPlan,
+  gameOfPlan,
   purchasePlan,
   saleAllowed,
   tagsBarredFrom,
@@ -126,6 +127,21 @@ export function releasesEmail(env) {
  * Returns expired rentals to the pool. Called before anything that reads or
  * allocates stock, so no cron job is needed.
  */
+/**
+ * ` AND EXISTS (…)` restricting a steam_accounts row to accounts in one game's pool.
+ *
+ * An account owns a library, so membership lives in steam_account_games rather than
+ * in the single `game` column — see migrations/0014_account_games.sql. The bind for
+ * the game goes wherever this fragment is placed.
+ */
+function gameMatchSql(alias = '') {
+  const col = alias ? `${alias}id` : 'id';
+  return ` AND EXISTS (
+             SELECT 1 FROM steam_account_games g
+              WHERE g.account_id = ${col} AND g.game = ?
+           )`;
+}
+
 async function sweepExpired(db) {
   const ts = now();
   const expired = await db
@@ -143,8 +159,23 @@ async function sweepExpired(db) {
     if (row.account_id != null) {
       statements.push(
         db
-          .prepare(`UPDATE steam_accounts SET status = 'available' WHERE id = ? AND status = 'rented'`)
-          .bind(row.account_id)
+          .prepare(
+            // Freed only when nothing else still holds this login. One account can
+            // carry two rentals at once — a customer renting a second game on it
+            // (orders.addon_of) — and freeing it when the FIRST of them lapses
+            // would put a login somebody is still using back in the pool, to be
+            // handed to a second customer sharing the same password.
+            //
+            // The mass-expire above runs first in this batch, so by now only
+            // genuinely live orders are still 'active'.
+            `UPDATE steam_accounts SET status = 'available'
+              WHERE id = ? AND status = 'rented'
+                AND NOT EXISTS (
+                  SELECT 1 FROM orders o
+                   WHERE o.account_id = ? AND o.status = 'active'
+                )`
+          )
+          .bind(row.account_id, row.account_id)
       );
     }
   }
@@ -238,7 +269,7 @@ async function countStock(db, game, forEmail, planId) {
   const row = await db
     .prepare(
       `SELECT COUNT(*) AS n FROM steam_accounts
-        WHERE game = ? AND status = 'available'
+        WHERE status = 'available'${gameMatchSql()}
           AND (reserved_for IS NULL OR lower(reserved_for) = lower(?))${tagRequireSql(planId)}${tagBarSql(planId)}`
     )
     .bind(game, forEmail ?? '')
@@ -279,7 +310,7 @@ async function claimAccount(db, game, forEmail = null, planId = null) {
       `UPDATE steam_accounts SET status = 'rented'
         WHERE id = (
           SELECT s.id FROM steam_accounts s
-           WHERE s.game = ? AND s.status = 'available'
+           WHERE s.status = 'available'${gameMatchSql('s.')}
              AND (s.reserved_for IS NULL OR lower(s.reserved_for) = lower(?))${tagRequireSql(planId, 's.')}${tagBarSql(planId, 's.')}
            ORDER BY
              CASE WHEN s.reserved_for IS NULL THEN 1 ELSE 0 END,
@@ -318,10 +349,9 @@ async function forecastForPlan(db, game, forEmail, planId, limit = 3) {
         WHERE o.status = 'active'
           AND o.expires_at IS NOT NULL
           AND o.expires_at > ?
-          AND a.game = ?
           -- 'rented' only: a sold or disabled account never returns to the pool, so
           -- counting its rental would forecast stock that cannot arrive.
-          AND a.status = 'rented'
+          AND a.status = 'rented'${gameMatchSql('a.')}
           AND (a.reserved_for IS NULL OR lower(a.reserved_for) = lower(?))${tagRequireSql(planId, 'a.')}${tagBarSql(planId, 'a.')}
         GROUP BY o.expires_at
         ORDER BY o.expires_at
@@ -410,6 +440,9 @@ function upgradeQuote(fromPlan, toPlan, parent, ts) {
 // non-ASCII. Build the duration from `hours` rather than the Vietnamese label,
 // so "24 giờ" becomes "24h" instead of a truncated "24 gi".
 function shortDescription(plan, isExtension = false, count = 1, isUpgrade = false) {
+  // An addon reads as a plain rental of its own game, which is what it is — the
+  // gameName in the description is already the second game's.
+
   // payOS caps this at 25 ASCII characters, hence the trimming rather than prose.
   if (plan.purchase) {
     return `Mua acc ${plan.gameName}`.replace(/[^\x20-\x7E]/g, '').slice(0, 25);
@@ -430,8 +463,8 @@ async function insertOrder(db, order) {
   // caller retries with a fresh one.
   await db
     .prepare(
-      `INSERT INTO orders (order_code, user_key, user_email, game, plan_id, hours, amount, status, created_at, extends_order, batch_of, upgrades_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`
+      `INSERT INTO orders (order_code, user_key, user_email, game, plan_id, hours, amount, status, created_at, extends_order, batch_of, upgrades_order, addon_of)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`
     )
     .bind(
       order.orderCode,
@@ -444,15 +477,44 @@ async function insertOrder(db, order) {
       order.createdAt,
       order.extendsOrder ?? null,
       order.batchOf ?? null,
-      order.upgradesOrder ?? null
+      order.upgradesOrder ?? null,
+      order.addonOf ?? null
     )
     .run();
 }
 
+/** Whether this account's library covers that game. */
+async function accountOwnsGame(db, accountId, game) {
+  const row = await db
+    .prepare(`SELECT 1 AS ok FROM steam_account_games WHERE account_id = ? AND game = ?`)
+    .bind(accountId, game)
+    .first();
+  return Boolean(row?.ok);
+}
+
+/** An active rental of `game` already running on this account, or null. */
+function activeOrderForGame(db, accountId, game) {
+  return db
+    .prepare(
+      `SELECT order_code FROM orders
+        WHERE account_id = ? AND game = ? AND status = 'active'
+        LIMIT 1`
+    )
+    .bind(accountId, game)
+    .first();
+}
+
 export async function createCheckout(
   env,
-  { user, gameId = DEFAULT_GAME, planId, origin, extendOrderCode, buyOrderCode, upgradeOrderCode, quantity }
+  { user, gameId = DEFAULT_GAME, planId, origin, extendOrderCode, buyOrderCode, upgradeOrderCode, addonOrderCode, quantity }
 ) {
+  // A plan id belongs to exactly one game, so let it name its own rather than
+  // trusting the caller to send a matching pair. Without this, a PoE 2 plan posted
+  // from its page — which sends no game — would be looked up under the default game
+  // and rejected as unknown.
+  const planGame = gameOfPlan(planId);
+  if (planGame) gameId = planGame;
+
   const plan = findPlan(gameId, planId);
   if (!plan) return { status: 400, body: { error: 'unknown_plan' } };
 
@@ -475,24 +537,26 @@ export async function createCheckout(
     return { status: 400, body: { error: 'purchase_needs_rental' } };
   }
 
-  if (count > 1 && (extendOrderCode != null || buyOrderCode != null || upgradeOrderCode != null)) {
+  if (count > 1 && (extendOrderCode != null || buyOrderCode != null || upgradeOrderCode != null || addonOrderCode != null)) {
     // Each acts on one specific existing rental, so a quantity has nothing to mean.
     return { status: 400, body: { error: 'quantity_not_supported_here' } };
   }
 
   // Two of these at once is a contradiction — an upgrade replaces the plan, an
   // extension keeps it — and silently picking one would charge for the other.
-  if ([extendOrderCode, buyOrderCode, upgradeOrderCode].filter((c) => c != null).length > 1) {
+  if ([extendOrderCode, buyOrderCode, upgradeOrderCode, addonOrderCode].filter((c) => c != null).length > 1) {
     return { status: 400, body: { error: 'conflicting_target' } };
   }
 
   // An extension tops up a rental the customer already holds and a purchase takes
   // it over outright. Both act on an existing order's account, so both reuse it and
   // must NOT be blocked by an empty pool.
-  const targetOrderCode = extendOrderCode ?? buyOrderCode ?? upgradeOrderCode;
+  const targetOrderCode = extendOrderCode ?? buyOrderCode ?? upgradeOrderCode ?? addonOrderCode;
   let parent = null;
   // { quote, swapsAccount } once an upgrade has been validated; null otherwise.
   let upgrade = null;
+  // True once a second-game rental on the held account has been validated.
+  let addon = false;
   if (targetOrderCode != null) {
     await sweepExpired(db);
     parent = await db
@@ -505,18 +569,42 @@ export async function createCheckout(
       return { status: 409, body: { error: 'not_extendable', status: parent.status } };
     }
     if (parent.account_id == null) return { status: 409, body: { error: 'no_account_yet' } };
+
+    // Read once: three of the rules below are about the tags on the login this
+    // customer is already holding.
+    const held = await db
+      .prepare(`SELECT internal_note FROM steam_accounts WHERE id = ?`)
+      .bind(parent.account_id)
+      .first();
+
     // Only a no_ban account is for sale (SALE_REQUIRED_TAGS). listOrders already
     // hides the button on the rest, but a hidden button is not a closed endpoint —
     // and selling the wrong account is irreversible, since the buyer gets the
     // mailbox. So the rule is enforced here too, before any money moves.
-    if (plan.purchase) {
-      const held = await db
-        .prepare(`SELECT internal_note FROM steam_accounts WHERE id = ?`)
-        .bind(parent.account_id)
-        .first();
-      if (!saleAllowed(held?.internal_note)) {
-        return { status: 409, body: { error: 'not_for_sale' } };
-      }
+    if (plan.purchase && !saleAllowed(held?.internal_note)) {
+      return { status: 409, body: { error: 'not_for_sale' } };
+    }
+
+    // An extension adds hours to the rental the customer already has, on the SAME
+    // login — so it can only ever be a plan that login can actually serve. The VOIP
+    // week requires a no_ban account (PLAN_REQUIRED_TAGS), so extending a 1-day or
+    // plain-week rental with it would sell perks the account cannot deliver: the
+    // hours would land, the VOIP would not.
+    //
+    // The way from those plans to the VOIP week is the UPGRADE, which swaps in a
+    // vetted account. Hence the error naming it rather than a flat refusal.
+    if (extendOrderCode != null && !accountMeetsPlanTags(held?.internal_note, plan.id)) {
+      return {
+        status: 409,
+        body: {
+          error: 'extend_needs_tagged_account',
+          plan: plan.id,
+          requires: tagsRequiredBy(plan.id),
+          // Whether "nâng cấp" is actually available for this pair, so the page can
+          // point at it only when it exists.
+          upgradable: upgradeAllowed(parent.plan_id, plan.id),
+        },
+      };
     }
 
     if (upgradeOrderCode != null) {
@@ -544,17 +632,50 @@ export async function createCheckout(
       // an ordinary one has to move to a different login. Checked BEFORE the money
       // moves: discovering it after payment leaves a customer paid-up on a plan the
       // shop cannot serve, which is a refund conversation.
-      const held = await db
-        .prepare(`SELECT internal_note FROM steam_accounts WHERE id = ?`)
-        .bind(parent.account_id)
-        .first();
       upgrade.swapsAccount = !accountMeetsPlanTags(held?.internal_note, plan.id);
       if (upgrade.swapsAccount) {
         const available = await stockByGame(db, parent.game, user?.email ?? null, plan.id);
         if (available < 1) return { status: 409, body: { error: 'out_of_stock', available, wanted: 1 } };
       }
     }
-    gameId = parent.game;
+
+    if (addonOrderCode != null) {
+      // The plan names its own game — that is how the target game is chosen. It has
+      // to be a DIFFERENT game: the same one would be an extension or an upgrade,
+      // both of which already exist and mean something else.
+      const targetGame = gameOfPlan(plan.id);
+      if (!targetGame) return { status: 400, body: { error: 'unknown_plan' } };
+      if (targetGame === parent.game) {
+        return { status: 409, body: { error: 'same_game', game: targetGame } };
+      }
+      if (plan.purchase) return { status: 409, body: { error: 'addon_cannot_buy' } };
+
+      // The whole feature rests on this: the login the customer holds must actually
+      // own the game. Without it we would rent them something the account cannot
+      // launch, and no stock check would catch it because no stock is claimed.
+      if (!(await accountOwnsGame(db, parent.account_id, targetGame))) {
+        return { status: 409, body: { error: 'account_lacks_game', game: targetGame } };
+      }
+      // One rental per game per account. A second live rental of the same game on
+      // the same login is two customers' worth of nothing: it is the same install.
+      if (await activeOrderForGame(db, parent.account_id, targetGame)) {
+        return { status: 409, body: { error: 'game_already_rented', game: targetGame } };
+      }
+      // Same reasoning as the extension above: the plan runs on the login they
+      // already hold, so a plan with required tags that login lacks cannot be sold.
+      if (!accountMeetsPlanTags(held?.internal_note, plan.id)) {
+        return {
+          status: 409,
+          body: { error: 'extend_needs_tagged_account', plan: plan.id, requires: tagsRequiredBy(plan.id), upgradable: false },
+        };
+      }
+      addon = true;
+      // Deliberately NOT `parent.game`: this order is for the other game, and its
+      // rows — plan, page, return URL — all follow from that.
+      gameId = targetGame;
+    } else {
+      gameId = parent.game;
+    }
   } else {
     const available = await stockByGame(db, gameId, user?.email ?? null, plan.id);
     // Checked against the whole batch: taking payment for ten and finding two is a
@@ -586,9 +707,11 @@ export async function createCheckout(
           AND batch_of IS NULL
           AND COALESCE(extends_order, 0) = COALESCE(?, 0)
           AND COALESCE(upgrades_order, 0) = COALESCE(?, 0)
+          AND COALESCE(addon_of, 0) = COALESCE(?, 0)
           ${kindClause}`
     )
-    .bind(key, now() - 60 * 30, parent ? parent.order_code : null, upgradeOrderCode ?? null, ...kindBind)
+    .bind(key, now() - 60 * 30, addon ? null : (parent ? parent.order_code : null),
+          upgradeOrderCode ?? null, addonOrderCode ?? null, ...kindBind)
     .first();
   if (pending?.checkout_url) {
     return {
@@ -621,10 +744,15 @@ export async function createCheckout(
         hours: plan.hours,
         amount: unitAmount,
         createdAt: now(),
-        extendsOrder: parent ? parent.order_code : null,
+        // An addon is deliberately excluded: it is not an extension of the parent,
+        // and leaving this set would send it down fulfilExtension and top up the
+        // OTHER game's rental instead.
+        extendsOrder: parent && !addon ? parent.order_code : null,
         // Set on an upgrade only, and alongside extends_order rather than instead
         // of it — see migrations/0013_order_upgrade.sql.
         upgradesOrder: upgrade ? parent.order_code : null,
+        // A second-game rental borrows the parent's account and claims nothing.
+        addonOf: addon ? parent.order_code : null,
       });
       break;
     } catch (err) {
@@ -761,7 +889,10 @@ async function fulfilSingle(env, orderCode) {
     order.status === 'sold' ||
     // The rental this one was moved off. It was paid for, so a redelivered webhook
     // naming it must not fall through to the claim path and take a second account.
-    order.status === 'upgraded'
+    order.status === 'upgraded' ||
+    // Same reasoning: a refunded order was paid, and re-fulfilling it would claim an
+    // account for a rental the shop has already given the money back for.
+    order.status === 'refunded'
   ) {
     return { ok: true, order };
   }
@@ -773,6 +904,9 @@ async function fulfilSingle(env, orderCode) {
   // add a week's hours to the old plan instead of moving the rental onto the new
   // one — for the price of the difference.
   if (order.upgrades_order != null) return fulfilUpgrade(env, order);
+  // A second-game rental on an account the customer already holds. Checked before
+  // the pool path below, because it must NOT claim a fresh account.
+  if (order.addon_of != null) return fulfilAddon(env, order);
   if (order.extends_order != null) return fulfilExtension(env, order);
 
   await sweepExpired(db);
@@ -857,6 +991,83 @@ async function fulfilPurchase(env, order) {
   ]);
 
   return { ok: true, order: { ...order, status: 'active', account_id: accountId }, purchased: true };
+}
+
+/**
+ * Applies a paid second-game rental: the customer keeps the login they already have
+ * and gains a rental of another game on it.
+ *
+ * Claims nothing from the pool — that is the point. The account is already out with
+ * this customer, and the game is one its library covers, so there is nothing to
+ * allocate and no stock to run out of. The parent rental is left completely alone:
+ * both games run on their own clock, and either can lapse or be extended without
+ * touching the other.
+ *
+ * Deliberately does NOT sweep first, for the same reason fulfilExtension does not:
+ * a sweep would expire the parent and free the very account this order borrows.
+ */
+async function fulfilAddon(env, order) {
+  const db = env.DB;
+  const ts = now();
+
+  const parent = await db
+    .prepare(`SELECT * FROM orders WHERE order_code = ?`)
+    .bind(order.addon_of)
+    .first();
+
+  const stall = async (reason) => {
+    await db
+      .prepare(`UPDATE orders SET status = 'awaiting_stock', paid_at = COALESCE(paid_at, ?) WHERE order_code = ?`)
+      .bind(ts, order.order_code)
+      .run();
+    return { ok: false, reason };
+  };
+
+  if (!parent || parent.user_key !== order.user_key) return stall('unknown_parent');
+  if (parent.account_id == null) return stall('parent_has_no_account');
+
+  // Re-checked at fulfilment, not trusted from checkout: the account's library can
+  // be edited in the admin panel while the customer is paying, and renting a game
+  // the login cannot launch is the one outcome this feature must never produce.
+  if (!(await accountOwnsGame(db, parent.account_id, order.game))) {
+    return stall('account_lacks_game');
+  }
+
+  // The parent may have lapsed while the payment settled, in which case the sweep
+  // has already handed its account back — reclaim it, or stall rather than build a
+  // rental on a login somebody else now holds. (The sweep only keeps an account
+  // when another ACTIVE order holds it, and a pending addon is not active.)
+  let accountId = parent.account_id;
+  if (parent.status !== 'active') {
+    const reclaimed = await db
+      .prepare(
+        `UPDATE steam_accounts SET status = 'rented'
+          WHERE id = ? AND status = 'available'
+          RETURNING id`
+      )
+      .bind(parent.account_id)
+      .first();
+    if (!reclaimed) return stall('account_taken');
+    accountId = reclaimed.id;
+  }
+
+  // Its own clock, starting now: the customer is buying N hours of this game, not
+  // whatever is left of the other one.
+  const expiresAt = ts + order.hours * 3600;
+
+  await db.batch([
+    db
+      .prepare(
+        `UPDATE orders SET status = 'active', paid_at = COALESCE(paid_at, ?), account_id = ?, expires_at = ?
+          WHERE order_code = ?`
+      )
+      .bind(ts, accountId, expiresAt, order.order_code),
+    // Belt and braces: the account is already 'rented' in the normal case, and this
+    // makes the state right even if the parent was reclaimed above.
+    db.prepare(`UPDATE steam_accounts SET status = 'rented' WHERE id = ? AND status = 'available'`).bind(accountId),
+  ]);
+
+  return { ok: true, order: { ...order, status: 'active', account_id: accountId }, expiresAt };
 }
 
 /**
@@ -1094,6 +1305,63 @@ async function reconcilePending(env, orders) {
 /* ─── reading a user's rentals ────────────────── */
 
 /**
+ * The other games this rental's login could also be rented for.
+ *
+ * Decided server-side because the page cannot know any of it: which games an
+ * account's library covers is in steam_account_games, and which of them are already
+ * running on that login is in the orders table. Sending a ready-made list also means
+ * the page cannot offer something checkout would refuse.
+ *
+ * Costs nothing to serve — a second-game rental claims no stock, so there is no
+ * availability to check.
+ */
+async function addonOffers(db, order, internalNote) {
+  if (order.account_id == null) return [];
+
+  const owned = await db
+    .prepare(`SELECT game FROM steam_account_games WHERE account_id = ?`)
+    .bind(order.account_id)
+    .all();
+
+  const taken = await db
+    .prepare(`SELECT game FROM orders WHERE account_id = ? AND status = 'active'`)
+    .bind(order.account_id)
+    .all();
+  const busy = new Set((taken?.results ?? []).map((r) => r.game));
+
+  const offers = [];
+  for (const row of owned?.results ?? []) {
+    const game = row.game;
+    // Skip the game this rental already is, and any other game already running on
+    // this login — one rental per game per account.
+    if (busy.has(game)) continue;
+    const catalogue = GAMES[game];
+    if (!catalogue) continue;
+    offers.push({
+      game,
+      name: catalogue.name,
+      path: catalogue.path,
+      // Purchase plans are excluded: buying is about the account, not a game on it,
+      // and a second buy-out of the same login makes no sense.
+      // Filtered, not flagged: a second-game plan the held login cannot serve has
+      // no upgrade route to offer instead, so there is nothing useful to show.
+      plans: catalogue.plans
+        .filter((p) => accountMeetsPlanTags(internalNote, p.id))
+        .map((p) => ({
+          id: p.id,
+          label: p.label,
+          icon: p.icon ?? null,
+          amount: p.amount,
+          hours: p.hours,
+          perks: p.perks ?? null,
+        })),
+    });
+  }
+  // A game whose every plan the login cannot serve is not an offer.
+  return offers.filter((o) => o.plans.length);
+}
+
+/**
  * The upgrade buttons to show on one live rental.
  *
  * Everything here is decided server-side because the page cannot know any of it:
@@ -1171,9 +1439,11 @@ export async function listOrders(env, user) {
       createdAt: order.created_at,
       expiresAt: order.expires_at,
       purchase: Boolean(findPlan(order.game, order.plan_id)?.purchase),
-      // Both set below, once the account behind a live rental is known.
+      // All set below, once the account behind a live rental is known.
       forSale: false,
+      extendPlans: [],
       upgrades: [],
+      addonGames: [],
       credentials: null,
     };
 
@@ -1207,7 +1477,22 @@ export async function listOrders(env, user) {
           // rental rather than per plan: the difference depends on what they are
           // on now, and whether a login has to change depends on the account they
           // happen to be holding.
+          // Which of this game's plans the held login can actually serve. An
+          // extension runs on that same account, so a plan whose required tags it
+          // lacks — the VOIP week on an ordinary account — is not extendable, and
+          // the page disables that button instead of taking money for perks that
+          // would never arrive. `upgradable` says whether there is a legitimate
+          // route to it, which for 1 ngày and 1 tuần there is.
+          entry.extendPlans = (GAMES[order.game]?.plans ?? []).map((p) => ({
+            id: p.id,
+            allowed: accountMeetsPlanTags(account.internal_note, p.id),
+            requires: tagsRequiredBy(p.id),
+            upgradable: upgradeAllowed(order.plan_id, p.id),
+          }));
           entry.upgrades = await upgradeOffers(db, order, account, user?.email ?? null);
+          // Other games the very same login can play. Empty for a single-game
+          // account, which is every account until one is tagged with a second game.
+          entry.addonGames = await addonOffers(db, order, account.internal_note);
           // The mailbox is withheld from renters by default: whoever holds it can
           // reset the Steam password and keep the account for good. For a BUYER
           // that is precisely the point — and it is what makes buying fix the

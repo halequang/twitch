@@ -15,7 +15,6 @@ cd "$ROOT"
 
 if [ -f .env.deploy ]; then
   set -a
-  # shellcheck disable=SC1091
   . ./.env.deploy
   set +a
 fi

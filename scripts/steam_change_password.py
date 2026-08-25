@@ -39,10 +39,50 @@ the code present BEFORE the send is snapshotted and poll_new_code waits for a
 different one. Steam codes are single-use: submitting a stale one just burns the
 attempt and fails confusingly.
 
+Every browser is closed with driver.quit() when its account finishes — both of
+them, since a sweep runs two at once (Steam and the mailbox) and each holds a few
+hundred MB. They are tracked in a registry with their throwaway profiles, closed in
+the account's `finally`, closed again at the top of the next account (so --keep-open
+keeps the LAST account's browser rather than all six), and closed by an atexit hook
+if the run ends some other way. quit(), never close(): close() disposes of one tab
+and leaves the browser and its chromedriver running, which is how they pile up until
+Chrome reports "tab crashed" three accounts later.
+
+Reading a non-Microsoft mailbox drives a second browser, so that browser is opened
+ONCE per account and reused for every read (the snapshot, then the polling), and the
+mailbox is snapshotted BEFORE the Steam form is filled. Doing it between typing and
+submitting left the credentials sitting in a form for the half-minute a Chrome launch
+takes — which is what "entered credentials" followed by nothing was.
+
+Waiting for a webmail code is a uid comparison, not a text comparison: the snapshot
+records the highest message uid, and a poll asks Roundcube to check for mail in place
+(`rcmail.command('checkmail')`) and looks at the uids — one JavaScript call, ~1.4s,
+no page loads. Only a message above the baseline is opened. The earlier version
+reloaded the inbox and re-opened the three newest messages on every poll, ~18s of
+work per check measured against a real mailbox, which is why a code took minutes to
+be noticed. A uid is also a stricter test than the code text, since a resent
+identical code would pass "is it different" while failing "is it newer".
+
 Flow (all on help.steampowered.com): log in -> open the change-password wizard
 -> click "Email an account verification code" -> read the emailed code (via the
 outlook token, or a manual prompt) and submit it -> set the new password twice on
 the reset page and submit. Status OK means the new password is live (and recorded).
+
+A password is never rotated twice within 24 hours (MIN_ROTATION_INTERVAL_HOURS).
+A ROLLING window, not "the same calendar day": a calendar rule would allow 23:50 then
+00:10, twenty minutes apart, which is the double rotation this exists to prevent.
+Each rotation costs a Steam Guard email and invalidates whatever the previous run
+recorded, so the second one is waste at best and a lockout at worst.
+
+The time of every successful change is stored in
+steam_accounts.password_changed_at (--db mode) — the database being the only thing
+the two copies of this script share, so a rotation done on the server is visible to
+the laptop and vice versa. File mode falls back to the OK rows in the result file.
+The guard is applied twice: in the selection query, and again immediately before
+Steam is touched, because a run takes minutes per account and another machine can
+rotate one in between. Skips are recorded as SKIPPED_TOO_RECENT, which load_done()
+treats as not-done, so an account is never retired from rotation by being skipped.
+--force overrides it; --account alone does not.
 
 Already-done accounts (present in the result file) are skipped; pass --force to redo.
 For an unattended/scheduled run use --yes, NOT --force: --yes skips the production
@@ -119,10 +159,12 @@ import os
 import random
 import re
 import string
+import atexit
+import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -131,6 +173,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import StaleElementReferenceException
 from webdriver_manager.chrome import ChromeDriverManager
 
 # Optional: only needed for automatic Steam Guard / email-code reading.
@@ -412,9 +455,10 @@ def _read_code_api(acc):
 # imported rather than reimplemented here.
 WEBMAIL_TIMEOUT_SEC = 40
 WEBMAIL_SCAN_DEPTH = 3
-# A webmail read is a page load plus a message open, so polling it as fast as the
-# HTTP endpoint would hammer the host for no gain.
-WEBMAIL_POLL_INTERVAL_SEC = 8
+# An idle check is now one in-page JavaScript call, so it can run at roughly the
+# pace of the Graph endpoint. It was 8s when every check cost a page load plus three
+# message opens — and with that ~20s of work on top, a code took minutes to notice.
+WEBMAIL_POLL_INTERVAL_SEC = 4
 
 _QMAIL = None
 
@@ -518,13 +562,18 @@ class _WebmailSession:
         self.label = acc.get("steam_user") or acc.get("email") or "?"
         self.url = _webmail_url(acc.get("email"))
         self.driver = None
+        # Highest uid seen. Everything above it is mail that arrived since.
+        self.baseline_uid = 0
 
     def open(self):
         module = _qmail()
         if not (module and self.url and self.acc.get("email_pass")):
             return False
         try:
-            self.driver = module.create_driver(True, WEBMAIL_TIMEOUT_SEC)
+            # Registered here because open_qisteam_mail builds this one: without it
+            # the per-account browser that is NOT the Steam one would be invisible to
+            # close_all_drivers().
+            self.driver = _register_driver(module.create_driver(True, WEBMAIL_TIMEOUT_SEC))
             ok, detail = module.open_mailbox(
                 self.driver,
                 self.url,
@@ -542,21 +591,66 @@ class _WebmailSession:
         print(f"  [{self.label}] signed into {self.url} as {self.acc['email']}")
         return True
 
-    def read(self, want):
-        """The newest code in this mailbox that suits `want`, or ""."""
+    def _uids(self):
+        """Message uids on the listing, refreshing in place when possible."""
+        module = _qmail()
+        if not module.on_message_list(self.driver):
+            # Only when the browser is somewhere else — reading a message leaves it
+            # on that message — because this is a full page load.
+            module.goto_inbox(self.driver, self.url)
+            try:
+                WebDriverWait(self.driver, WEBMAIL_TIMEOUT_SEC).until(
+                    lambda d: module.on_message_list(d))
+            except Exception:
+                return []
+        else:
+            # Roundcube's own "check mail", so the list updates without navigating.
+            module.check_new_mail(self.driver)
+            time.sleep(1.2)
+        return module.row_uids(self.driver)
+
+    def mark_baseline(self):
+        """Remember the newest message, so later reads know what "new" means.
+
+        Cheaper and stricter than snapshotting the code text: comparing codes cannot
+        tell a resent identical code from a stale one, whereas a uid only ever goes
+        up. It also means the snapshot costs one inbox load instead of opening the
+        three newest messages.
+        """
+        uids = self._uids()
+        self.baseline_uid = max(uids) if uids else 0
+        return self.baseline_uid
+
+    def read_new(self, want):
+        """The code from a message that arrived AFTER the baseline, or "".
+
+        The idle case — nothing new yet — is the one that runs over and over while
+        waiting for Steam, so it costs exactly one JavaScript call: refresh the list,
+        compare the highest uid, return. No page loads, no message opens, no
+        classifier subprocess. Only a genuinely new message is opened, and only the
+        new ones, newest first.
+
+        This is what took five minutes before: every poll reloaded the inbox AND
+        re-opened the three newest messages (a page load each) and spawned node to
+        classify mail it had already classified, so one "has it arrived?" check cost
+        the better part of half a minute.
+        """
         module = _qmail()
         if not (module and self.driver):
             return ""
-        # Back to the inbox first: a previous read left the browser on a message
-        # page, where the list this reads has no rows to find.
-        base = self.url.rstrip("/").split("?")[0]
         try:
-            self.driver.get(f"{base}/?_task=mail&_mbox=INBOX")
-            mails, why = module.read_newest_emails(
-                self.driver, self.url, WEBMAIL_TIMEOUT_SEC, 1500, WEBMAIL_SCAN_DEPTH)
-            if not mails:
+            uids = self._uids()
+            fresh = sorted((u for u in uids if u > self.baseline_uid), reverse=True)
+            if not fresh:
                 return ""
-            verdict = module.classify_codes(mails, WEBMAIL_SCAN_DEPTH)
+
+            mails = []
+            for uid in fresh[:WEBMAIL_SCAN_DEPTH]:
+                mails.append(module.read_email(self.driver, self.url, uid, 1500))
+            # Raised only after the new mail has actually been read, so a crash
+            # mid-read does not silently skip the message carrying the code.
+            self.baseline_uid = max(fresh[0], self.baseline_uid)
+            verdict = module.classify_codes(mails, len(mails))
         except Exception as err:
             print(f"  [{self.label}] webmail read failed: {err}")
             return ""
@@ -564,22 +658,49 @@ class _WebmailSession:
 
     def close(self):
         if self.driver is not None:
-            try:
-                self.driver.quit()
-            except Exception:
-                pass
+            close_driver(self.driver)
             self.driver = None
 
 
-def _read_code_webmail(acc, want):
-    """One sign-in, one read, then close. Used for the pre-send snapshot."""
+def _mail_session(acc):
+    """The account's webmail browser, opened on first use and then reused.
+
+    Cached on the account dict because a single rotation reads the mailbox at least
+    twice — a snapshot before the code is sent, then polling until it arrives — and
+    each sign-in costs a Chrome launch of twenty to thirty seconds. Opening one per
+    read is what made the run appear to hang after "entered credentials".
+
+    Returns None when this account has no readable webmail, or the sign-in failed.
+    A failed open is remembered so every later read does not retry it.
+    """
+    if "_mail" in acc:
+        return acc["_mail"]
     session = _WebmailSession(acc)
-    if not session.open():
-        return ""
-    try:
-        return session.read(want)
-    finally:
+    acc["_mail"] = session if session.open() else None
+    return acc["_mail"]
+
+
+def close_mail_session(acc):
+    """Shuts the webmail browser for this account. Safe to call more than once."""
+    session = acc.pop("_mail", None)
+    if session is not None:
         session.close()
+
+
+def _read_code_webmail(acc, want):
+    """The pre-send snapshot for a webmail mailbox.
+
+    Records where the mailbox is up to and returns "" rather than a code: every
+    caller uses this value only to recognise a LATER arrival, and for webmail that
+    comparison is done on uid instead. Which also makes the snapshot one page load
+    rather than four.
+    """
+    session = _mail_session(acc)
+    if not session:
+        return ""
+    newest = session.mark_baseline()
+    print(f"  [{session.label}] watching {acc['email']} for mail newer than #{newest}")
+    return ""
 
 
 def _can_read_code(acc):
@@ -627,21 +748,154 @@ def poll_new_code(acc, before_code, max_wait=GUARD_CODE_WAIT_SEC,
             time.sleep(poll_interval)
         return ""
 
-    # Webmail: one sign-in, then re-read the inbox until something new shows up.
+    # Webmail: the session the snapshot already opened, re-read until something new
+    # shows up. Left open afterwards — the wizard reads it again for the next step,
+    # and main() closes it when the account is done.
     if _can_use_webmail(acc):
-        session = _WebmailSession(acc)
-        if not session.open():
+        session = _mail_session(acc)
+        if not session:
             return ""
-        try:
-            deadline = time.time() + max_wait
-            while time.time() < deadline:
-                code = session.read(want)
-                if code and code != before_code:
-                    return code
-                time.sleep(max(poll_interval, WEBMAIL_POLL_INTERVAL_SEC))
-        finally:
-            session.close()
+        deadline = time.time() + max_wait
+        while time.time() < deadline:
+            # before_code is unused on this path: "newer than the baseline uid" is a
+            # stronger test than "different text", since a resent identical code
+            # would pass the second and fail the first for the right reason.
+            code = session.read_new(want)
+            if code:
+                return code
+            time.sleep(max(poll_interval, WEBMAIL_POLL_INTERVAL_SEC))
     return ""
+
+
+# ── browser lifetime ──────────────────────────────────────────────────────────
+# Every driver this script opens is registered here with the throwaway profile it
+# was given, so no path can leave one running.
+#
+# A sweep opens TWO browsers per account — Steam and the mailbox — and each holds a
+# few hundred MB. A crashed tab, an exception before the `finally`, or the second
+# mailbox a change-email run opens used to leave one alive; six accounts later that
+# is a dozen Chromes and the next tab dies with "tab crashed", which is the symptom
+# rather than the cause.
+_LIVE_DRIVERS = {}
+
+
+def _register_driver(driver, profile_dir=None):
+    """Record a driver so close_all_drivers() can reach it."""
+    if driver is not None:
+        _LIVE_DRIVERS[id(driver)] = (driver, profile_dir)
+    return driver
+
+
+def close_driver(driver):
+    """Quit a driver and delete its profile. Never raises.
+
+    quit(), never close(): close() disposes of one tab and leaves the browser and
+    its chromedriver running, which is precisely how they accumulate.
+    """
+    if driver is None:
+        return
+    _, profile_dir = _LIVE_DRIVERS.pop(id(driver), (None, None))
+    try:
+        driver.quit()
+    except Exception as err:
+        # A crashed tab often takes quit() down with it. Worth saying — a browser
+        # that would not close is worth knowing about — but never worth stopping for.
+        print(f"  (browser did not close cleanly: {str(err).splitlines()[0][:80]})")
+    if profile_dir:
+        # A fresh temp profile per driver, and nothing removed them: a long sweep
+        # left one directory per browser behind.
+        shutil.rmtree(profile_dir, ignore_errors=True)
+
+
+def close_all_drivers():
+    """Close every browser this process still has open."""
+    for driver, _ in list(_LIVE_DRIVERS.values()):
+        close_driver(driver)
+
+
+# The backstop: whatever ends the run — an unhandled exception, Ctrl+C, a sys.exit
+# deep inside a wizard — the browsers go with the process instead of outliving it.
+atexit.register(close_all_drivers)
+
+
+# ── "not twice within a day" ──────────────────────────────────────────────────
+# Rotating a password costs a Steam Guard email and invalidates whatever the last
+# run recorded, so an account rotated in the last 24 hours is left alone.
+#
+# A ROLLING 24 hours, not "the same calendar day": a calendar rule would let an
+# account rotated at 23:50 be rotated again at 00:10, twenty minutes later, which is
+# exactly the double rotation this exists to prevent. It also means no timezone
+# arithmetic — an interval is the same length everywhere, whereas "today" is not.
+MIN_ROTATION_INTERVAL_HOURS = 24
+MIN_ROTATION_INTERVAL_SEC = MIN_ROTATION_INTERVAL_HOURS * 3600
+
+# Applied to steam_accounts in the selection query.
+TOO_RECENT_SQL = (
+    f" AND (sa.password_changed_at IS NULL"
+    f" OR sa.password_changed_at <= strftime('%s', 'now') - {MIN_ROTATION_INTERVAL_SEC})"
+)
+
+
+def hours_until_rotatable(epoch):
+    """Hours left before this account may be rotated again, or 0 if it may now."""
+    if not epoch:
+        return 0.0
+    try:
+        age = time.time() - int(epoch)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, (MIN_ROTATION_INTERVAL_SEC - age) / 3600.0)
+
+
+def format_wait(hours):
+    """A wait a human can act on. Sub-hour waits in minutes, because "0.0h" reads
+    as "now" — which is the opposite of what it means."""
+    if hours >= 1:
+        return f"{hours:.1f}h"
+    return f"{max(1, round(hours * 60))} min"
+
+
+def rotated_recently(epoch):
+    """True if this timestamp is inside the last MIN_ROTATION_INTERVAL_HOURS."""
+    return hours_until_rotatable(epoch) > 0
+
+
+def rotated_recently_in_db(db_id, remote):
+    """Re-read from the database, for the check made just before touching Steam.
+
+    Selection happens up front but a run takes minutes per account, so another
+    machine — the server copy of this script — can rotate one in the meantime. The
+    database is the only thing both copies share, which is why the timestamp lives
+    there rather than in a result file.
+
+    Returns hours remaining (0 when it may be rotated).
+    """
+    rows = _d1(f"SELECT password_changed_at FROM steam_accounts WHERE id = {int(db_id)}", remote)
+    return hours_until_rotatable(rows[0].get("password_changed_at")) if rows else 0.0
+
+
+def rotated_recently_in_file(path, steam_user):
+    """File mode has no database, so the result file's own timestamps decide.
+
+    Only OK rows count: a SKIPPED or failed attempt did not change anything, so it
+    must not block a retry. Timestamps are written by record() as local time, which
+    is what they are parsed back as — no conversion, and none needed.
+
+    Returns hours remaining (0 when it may be rotated).
+    """
+    if not os.path.exists(path):
+        return 0.0
+    newest = 0
+    for line in open(path, "r", encoding="utf-8"):
+        parts = line.strip().split("|")
+        if len(parts) < 6 or parts[0] != steam_user or not parts[4].startswith("OK"):
+            continue
+        try:
+            when = datetime.strptime(parts[5], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        newest = max(newest, int(when.timestamp()))
+    return hours_until_rotatable(newest)
 
 
 def _crypto(mode, value, key):
@@ -688,15 +942,22 @@ def _decrypt_mail_pass(row, key):
         return ""
 
 
-def load_accounts_from_db(remote, key):
+def load_accounts_from_db(remote, key, force=False):
     """Accounts whose rental is OVER — status 'available' with an expired order —
-    decrypted for login. Returns account dicts with db_id + last_expired."""
+    decrypted for login. Returns account dicts with db_id + last_expired.
+
+    Accounts rotated within the last MIN_ROTATION_INTERVAL_HOURS are left out unless
+    `force`: each rotation costs a Steam Guard email and invalidates the password the
+    previous run recorded, so doing it twice inside a day is waste at best and a
+    lockout at worst."""
     sql = ("SELECT sa.id AS id, sa.login AS login, sa.password_enc AS password_enc, "
            "sa.email AS email, sa.email_password_enc AS email_password_enc, "
+           "sa.password_changed_at AS password_changed_at, "
            "MAX(o.expires_at) AS last_expired "
            "FROM steam_accounts sa "
            "JOIN orders o ON o.account_id = sa.id AND o.status = 'expired' "
-           "WHERE sa.status = 'available' GROUP BY sa.id")
+           f"WHERE sa.status = 'available'{'' if force else TOO_RECENT_SQL} "
+           "GROUP BY sa.id")
     accounts = []
     for r in _d1(sql, remote):
         enc = r.get("password_enc") or ""
@@ -716,6 +977,7 @@ def load_accounts_from_db(remote, key):
             "refresh_token": "",
             "client_id": "",
             "last_expired": r.get("last_expired"),
+            "rotated_at": r.get("password_changed_at"),
         })
     return accounts
 
@@ -731,6 +993,7 @@ def update_db_password(db_id, new_pass, remote, key):
     The b64url ciphertext is quote-safe so it's inlined into the SQL.
     Returns the account's resulting status."""
     enc = _crypto("enc", new_pass, key)
+    ts = int(time.time())
     # Return to the pool ONLY from a state that belongs to the pool. Two states
     # must survive a rotation untouched:
     #   'rented'          - a customer still holds it (would double-book)
@@ -740,6 +1003,11 @@ def update_db_password(db_id, new_pass, remote, key):
     rows = _d1(
         "UPDATE steam_accounts SET "
         f"password_enc = '{enc}', "
+        # When this rotation happened. Written in the same statement as the
+        # password so the two can never disagree: a recorded time with an
+        # unchanged password would make the same-day guard skip an account that
+        # still has the old one.
+        f"password_changed_at = {ts}, "
         "status = CASE "
         "  WHEN status IN ('sold', 'disabled') THEN status "
         "  WHEN EXISTS (SELECT 1 FROM orders WHERE account_id = steam_accounts.id "
@@ -883,8 +1151,8 @@ def load_db_accounts_by_login(logins, remote, key):
     if not logins:
         return []
     quoted = ",".join("'" + s.replace("'", "''") + "'" for s in logins)
-    sql = (f"SELECT id, login, password_enc, email, email_password_enc "
-           f"FROM steam_accounts WHERE login IN ({quoted})")
+    sql = (f"SELECT id, login, password_enc, email, email_password_enc, "
+           f"password_changed_at FROM steam_accounts WHERE login IN ({quoted})")
     accounts = []
     for r in _d1(sql, remote):
         enc = r.get("password_enc") or ""
@@ -904,6 +1172,7 @@ def load_db_accounts_by_login(logins, remote, key):
             "refresh_token": "",
             "client_id": "",
             "last_expired": None,
+            "rotated_at": r.get("password_changed_at"),
         })
     return accounts
 
@@ -1032,6 +1301,12 @@ def create_driver(chrome_path):
         opts.add_argument("--no-sandbox")
         opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-popup-blocking")
+    # Every megabyte counts on a sweep: two browsers live at once and this script's
+    # crash mode is Chrome running out of room ("tab crashed"). None of this is
+    # needed for the automation, so none of it is worth the RAM.
+    opts.add_argument("--disable-extensions")
+    opts.add_argument("--disable-background-networking")
+    opts.add_argument("--disable-sync")
     opts.add_experimental_option("prefs", {
         "credentials_enable_service": False,
         "profile.password_manager_enabled": False,
@@ -1062,7 +1337,7 @@ def create_driver(chrome_path):
             "    --disable-dev-shm-usage automatically on Linux."
         ) from e
     driver.set_window_size(1200, 900)
-    return driver
+    return _register_driver(driver, profile_dir)
 
 
 def _is_logged_in(driver):
@@ -1212,6 +1487,92 @@ def _enter_steam_guard_code(driver, code):
     return False
 
 
+def _submit_login_form(driver, pass_input):
+    """Send the form holding this password field. Returns how it was sent, or "".
+
+    Scoped to that form rather than "any submit button on the page": Steam's login
+    page carries other forms (the store search among them), and clicking the wrong
+    one navigates away with the credentials unsent.
+
+    Order matters. The button is what a customer would click, so a React handler
+    bound to it definitely runs. requestSubmit() is the fallback because it fires the
+    form's submit event exactly as a button would — unlike submit(), which bypasses
+    every handler, and unlike Enter, which does nothing at all in a form with several
+    fields and no submit button. That last one is why this reports WHICH route was
+    taken instead of a bare True: a fallback that silently sends nothing is the bug
+    it was written to prevent.
+    """
+    try:
+        return str(driver.execute_script(
+            """
+            const pwd = arguments[0];
+            const form = pwd.closest('form');
+            const scope = form || pwd.parentElement;
+            const btn = scope && (scope.querySelector('button[type="submit"]')
+              || scope.querySelector('input[type="submit"]')
+              || Array.from(scope.querySelectorAll('button')).find(b => b.offsetParent !== null));
+            if (btn) { btn.click(); return 'button'; }
+            if (form && form.requestSubmit) { form.requestSubmit(); return 'requestSubmit'; }
+            return '';
+            """,
+            pass_input,
+        ) or '')
+    except Exception:
+        return ''
+
+
+def _fill_and_submit_login(driver, wait, acc, label):
+    """Type the credentials and actually send them.
+
+    Two failure modes this exists for, both seen in real runs:
+
+      · Steam's login form is React and re-renders on its own schedule, so the
+        elements found a moment ago can be stale by the time they are typed into.
+        The exception surfaced as a bare "login error" with the credentials filled
+        in and nothing submitted — hence the single retry with fresh elements.
+      · Enter in the password field only submits while the form still has focus. The
+        button is what the customer would click, so click it, and keep Enter as the
+        fallback for a layout that has none.
+
+    Returns True once the credentials are on their way.
+    """
+    for attempt in (1, 2):
+        try:
+            user_input, pass_input = _find_login_inputs(driver, wait)
+            if not user_input or not pass_input:
+                if _is_steam_guard_prompt(driver):
+                    print(f"  [{label}] Steam Guard prompt before login — manual entry needed.")
+                else:
+                    print(f"  [{label}] could not find login form (username/password).")
+                return False
+
+            user_input.clear()
+            user_input.send_keys(acc["steam_user"])
+            pass_input.clear()
+            pass_input.send_keys(acc["steam_pass"])
+            print(f"  [{label}] entered credentials")
+
+            how = _submit_login_form(driver, pass_input)
+            if how == 'button':
+                print(f"  [{label}] clicked the login button")
+            elif how:
+                print(f"  [{label}] no login button — submitted the form directly")
+            else:
+                # Last resort, and reported as such: Enter does not submit a form
+                # with several fields and no submit button, so this may well have
+                # sent nothing.
+                pass_input.send_keys(Keys.ENTER)
+                print(f"  [{label}] could not find a way to submit — tried Enter")
+            return True
+        except StaleElementReferenceException:
+            if attempt == 2:
+                print(f"  [{label}] login form kept re-rendering — gave up submitting.")
+                return False
+            print(f"  [{label}] login form re-rendered; retrying with fresh fields")
+            time.sleep(1.0)
+    return False
+
+
 def steam_login(driver, acc):
     """Log into Steam using acc['steam_user'] + acc['steam_pass']. Handles the
     email Steam Guard prompt automatically if acc has refresh_token/client_id.
@@ -1226,25 +1587,17 @@ def steam_login(driver, acc):
             print(f"  [{label}] already logged in.")
             return True
 
-        user_input, pass_input = _find_login_inputs(driver, wait)
-        if not user_input or not pass_input:
-            if _is_steam_guard_prompt(driver):
-                print(f"  [{label}] Steam Guard prompt before login — manual entry needed.")
-            else:
-                print(f"  [{label}] could not find login form (username/password).")
-            return False
-
-        user_input.clear()
-        user_input.send_keys(username)
-        pass_input.clear()
-        pass_input.send_keys(password)
-        print(f"  [{label}] entered credentials")
-        # Snapshot before submitting: Steam Guard may email a code, and we must
-        # not resubmit one left over from an earlier attempt.
+        # Snapshot the mailbox BEFORE touching the form. Steam Guard may email a
+        # code and we must not resubmit one left over from an earlier attempt — but
+        # for a webmail account this read drives a second browser, which takes long
+        # enough that doing it between typing and Enter left the filled-in Steam
+        # form idle for half a minute. That is what "entered credentials" then
+        # nothing looked like. Same information, taken before anything is typed.
         guard_before = _read_code(acc, "login") if _can_read_code(acc) else ""
+
         submit_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        pass_input.send_keys(Keys.ENTER)
-        print(f"  [{label}] submitted login")
+        if not _fill_and_submit_login(driver, wait, acc, label):
+            return False
 
         try:
             WebDriverWait(driver, 25).until(
@@ -1771,7 +2124,7 @@ def main():
             else:
                 print(f"[db] source: twitch D1 '{D1_DB_NAME}' ({where}) — rotating "
                       f"passwords for accounts whose rental is over.")
-                accounts = load_accounts_from_db(remote, enc_key)
+                accounts = load_accounts_from_db(remote, enc_key, force=force)
         except Exception as e:
             print(f"[db] failed to load accounts from D1: {e}")
             sys.exit(1)
@@ -1862,6 +2215,37 @@ def main():
         user = acc["steam_user"]
         print(f"\n===== [{n}/{len(todo)}] {user} =====")
 
+        # Already rotated today, by this run's own earlier pass or by the other copy
+        # of this script on another machine. Checked here as well as in the selection
+        # query because a run takes minutes per account, and re-read from the database
+        # rather than trusted from memory for exactly that reason.
+        #
+        # --force is the deliberate override; --account alone is NOT, because "rotate
+        # this specific login" is usually a retry of something that just happened.
+        if not force and acc.get("db_id") is not None and use_db:
+            try:
+                left = rotated_recently_in_db(acc["db_id"], remote)
+                if left:
+                    print(f"  ⏭️  [{user}] SKIPPED — password changed less than "
+                          f"{MIN_ROTATION_INTERVAL_HOURS}h ago; rotatable again in "
+                          f"{format_wait(left)} (pass --force to override).")
+                    record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_TOO_RECENT")
+                    continue
+            except Exception as e:
+                # Cannot prove it was not just rotated, so do not gamble a second
+                # Guard email and a password nobody has recorded.
+                print(f"  ⏭️  [{user}] SKIPPED — rotation-interval re-check failed ({e}).")
+                record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_TOO_RECENT")
+                continue
+        elif not force and not use_db:
+            left = rotated_recently_in_file(result_file, user)
+            if left:
+                print(f"  ⏭️  [{user}] SKIPPED — password changed less than "
+                      f"{MIN_ROTATION_INTERVAL_HOURS}h ago; rotatable again in "
+                      f"{format_wait(left)} (pass --force to override).")
+                record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_TOO_RECENT")
+                continue
+
         # Re-check the pool before touching Steam. --account is an explicit force,
         # so it is exempt; the rental-over sweep is not.
         if use_db and not account_logins and acc.get("db_id") is not None:
@@ -1876,7 +2260,17 @@ def main():
                 record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_RERENTED")
                 continue
 
+        # Anything still alive belongs to the PREVIOUS account: only --keep-open
+        # leaves a browser behind, and keeping every one of them is what turns a
+        # six-account sweep into twelve Chromes. Keeping the LAST account's is what
+        # --keep-open is for.
+        close_all_drivers()
+
         driver = None
+        # Hoisted so the finally can close the second mailbox a change-email run
+        # opens: that session is cached on this dict rather than on `acc`, so
+        # close_mail_session(acc) never reached it and it outlived the run.
+        new_mail_acc = None
         new_pass = generate_password()
         try:
             driver = create_driver(chrome_path)
@@ -1958,11 +2352,12 @@ def main():
             print(f"  [{user}] error: {e}")
             record(user, acc["email"], acc["steam_pass"], "", "ERROR")
         finally:
-            if driver is not None and not keep_open:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
+            if not keep_open:
+                # Both browsers, unconditionally: Steam's and the mailbox's.
+                close_driver(driver)
+                close_mail_session(acc)
+                if new_mail_acc is not None:
+                    close_mail_session(new_mail_acc)
             time.sleep(random.uniform(1.5, 3.0))
 
     if keep_open:

@@ -15,9 +15,10 @@
  */
 
 import { decryptSecret, encryptSecret, sweepExpiredRentals } from './rentals.js';
-import { DEFAULT_GAME } from '../data/rental-plans.js';
+import { DEFAULT_GAME, GAMES } from '../data/rental-plans.js';
 import { pendingExpiryNotices, telegramConfigured } from './notify.js';
 import { REPORT_REASONS, URGENT_REASONS } from './reports.js';
+import { GAME_REQUEST_STATUSES } from './game-requests.js';
 
 export const ADMIN_PREFIX = '/api/admin/';
 
@@ -106,7 +107,18 @@ const now = () => Math.floor(Date.now() / 1000);
 
 // Statuses an admin may set by hand. 'pending' is deliberately absent: that is
 // payOS's to own, and forcing an order back to it would orphan a paid payment.
-const ORDER_STATUSES = ['active', 'expired', 'cancelled', 'awaiting_stock'];
+// 'refunded' is here rather than only in the filter list because it is a decision an
+// admin makes by hand: the money went back, so the order ends, the account returns to
+// the pool, and the sale stops counting. Distinct from 'cancelled', which was never
+// paid — telling them apart is the difference between "never bought" and "bought and
+// we gave it back".
+const ORDER_STATUSES = ['active', 'expired', 'cancelled', 'awaiting_stock', 'refunded'];
+
+// Statuses that were paid but must not count as income. Kept as a set because three
+// separate revenue sums have to agree, and a fourth is one refactor away.
+const NON_REVENUE_STATUSES = ['refunded'];
+const revenueStatusSql = (alias = '') =>
+  ` AND ${alias}status NOT IN (${NON_REVENUE_STATUSES.map((s) => `'${s}'`).join(', ')})`;
 
 // Every status an order row can actually hold, for the list filter. Deliberately
 // wider than ORDER_STATUSES, which is what an admin may SET by hand: you can want
@@ -124,8 +136,91 @@ const ORDER_STATUS_FILTERS = [
   'payment_expired',
   'awaiting_stock',
   'sold',
+  'refunded',
   'error',
 ];
+
+/**
+ * What customers want the shop to carry next, grouped by game.
+ *
+ * Grouped rather than listed row by row because the decision is per game, not per
+ * customer: "six people want Rust" is what justifies buying Rust accounts. The
+ * newest note is carried along so the tally is not just a number with no colour.
+ *
+ * Owner-only, like the rest of the demand reporting — a manager's scope is their own
+ * accounts, and a game nobody stocks yet belongs to no group.
+ */
+async function listGameRequests(env) {
+  const rows = await env.DB
+    .prepare(
+      `SELECT game_key,
+              -- The most recently typed spelling, so the display is not stuck with
+              -- whatever the first asker wrote.
+              (SELECT g2.game_name FROM game_requests g2
+                WHERE g2.game_key = g.game_key ORDER BY g2.updated_at DESC LIMIT 1) AS game_name,
+              COUNT(*) AS total,
+              SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open_count,
+              MIN(created_at) AS first_at,
+              MAX(updated_at) AS last_at,
+              (SELECT g3.status FROM game_requests g3
+                WHERE g3.game_key = g.game_key ORDER BY g3.replied_at DESC, g3.updated_at DESC LIMIT 1) AS status,
+              (SELECT g4.reply FROM game_requests g4
+                WHERE g4.game_key = g.game_key AND g4.reply IS NOT NULL
+                ORDER BY g4.replied_at DESC LIMIT 1) AS reply,
+              (SELECT g5.note FROM game_requests g5
+                WHERE g5.game_key = g.game_key AND g5.note IS NOT NULL
+                ORDER BY g5.updated_at DESC LIMIT 1) AS note
+         FROM game_requests g
+        GROUP BY game_key
+        ORDER BY total DESC, last_at DESC
+        LIMIT 100`
+    )
+    .all();
+
+  return (rows?.results ?? []).map((r) => ({
+    gameKey: r.game_key,
+    name: r.game_name,
+    total: Number(r.total ?? 0),
+    open: Number(r.open_count ?? 0),
+    status: r.status || 'open',
+    statusLabel: GAME_REQUEST_STATUSES[r.status] || r.status || 'open',
+    reply: r.reply ?? null,
+    note: r.note ?? null,
+    firstAt: r.first_at,
+    lastAt: r.last_at,
+  }));
+}
+
+/**
+ * Answers every request for one game at once.
+ *
+ * Per game rather than per row on purpose: "we added Rust" is true for everyone who
+ * asked for Rust, and making the owner reply to each asker separately would mean
+ * most of them never hear back.
+ */
+async function replyToGameRequests(env, body) {
+  const gameKey = cleanText(body?.gameKey, 80);
+  if (!gameKey) return bad('bad_game_key');
+
+  const status = String(body?.status ?? '');
+  if (!GAME_REQUEST_STATUSES[status]) {
+    return bad('bad_status', 400, { allowed: Object.keys(GAME_REQUEST_STATUSES) });
+  }
+  const reply = body?.reply === undefined ? null : cleanText(body.reply, 400);
+
+  const ts = now();
+  const result = await env.DB
+    .prepare(
+      `UPDATE game_requests
+          SET status = ?, reply = COALESCE(?, reply), replied_at = ?, updated_at = ?
+        WHERE game_key = ?`
+    )
+    .bind(status, reply, ts, ts, gameKey)
+    .run();
+
+  if (!result.meta.changes) return bad('unknown_game_key', 404);
+  return { status: 200, body: { ok: true, gameKey, status, changed: result.meta.changes, requests: await listGameRequests(env) } };
+}
 
 function bad(error, status = 400, extra = {}) {
   return { status, body: { error, ...extra } };
@@ -150,6 +245,7 @@ function cleanText(value, max = 200) {
 // carry credentials, encrypted or not.
 const ACCOUNT_COLUMNS = `
   a.id, a.game, a.login, a.email, a.note, a.internal_note, a.status, a.ban_state, a.created_at,
+  (SELECT GROUP_CONCAT(g.game) FROM steam_account_games g WHERE g.account_id = a.id) AS games,
   a.reserved_for,
   (a.email_password_enc IS NOT NULL) AS has_email_password,
   a.group_id, g.name AS group_name,
@@ -245,6 +341,9 @@ async function listAccounts(env, actor, query) {
     groupId: r.group_id ?? null,
     groupName: r.group_name ?? null,
     game: r.game,
+    // Every pool this login is in. One account can own several games — see
+    // migrations/0014_account_games.sql.
+    games: String(r.games || r.game || '').split(',').filter(Boolean),
     login: r.login,
     email: r.email ?? null,
     note: r.note ?? null,
@@ -312,7 +411,69 @@ async function createAccount(env, actor, body) {
     )
     .run();
 
+  // Which pools this login belongs to. `games` may list several — a Steam account
+  // owns a library — and the home game is always included, since that column is
+  // what the row is keyed by. Written as its own statement because the id is only
+  // known after the insert.
+  const games = [
+    ...new Set([
+      game,
+      ...(Array.isArray(body?.games) ? body.games : [])
+        .map((g) => cleanText(g, 50))
+        .filter(Boolean),
+    ]),
+  ];
+  for (const g of games) {
+    await env.DB
+      .prepare(
+        `INSERT OR IGNORE INTO steam_account_games (account_id, game)
+         SELECT id, ? FROM steam_accounts WHERE game = ? AND login = ?`
+      )
+      .bind(g, game, login)
+      .run();
+  }
+
   return { status: 200, body: { ok: true, accounts: (await listAccounts(env, actor)).items } };
+}
+
+/**
+ * Replaces which games an account's library covers.
+ *
+ * A whole-set write rather than add/remove calls: the admin panel edits a list, and
+ * "these are the games" cannot leave a stale membership behind the way a missed
+ * remove could. Never empty — an account in no pool is invisible to every query and
+ * looks like it has vanished — so the home game is always kept.
+ */
+async function setAccountGames(env, actor, body) {
+  const id = Number(body?.id);
+  if (!Number.isFinite(id)) return bad('bad_id');
+  const account = await env.DB
+    .prepare(`SELECT id, game, login FROM steam_accounts WHERE id = ?`)
+    .bind(id)
+    .first();
+  if (!account) return bad('unknown_account', 404);
+
+  const wanted = [
+    ...new Set([
+      account.game,
+      ...(Array.isArray(body?.games) ? body.games : []).map((g) => cleanText(g, 50)).filter(Boolean),
+    ]),
+  ].filter((g) => GAMES[g]);
+  if (!wanted.length) return bad('no_games');
+
+  const statements = [
+    env.DB.prepare(`DELETE FROM steam_account_games WHERE account_id = ?`).bind(id),
+    ...wanted.map((g) =>
+      env.DB
+        .prepare(`INSERT OR IGNORE INTO steam_account_games (account_id, game) VALUES (?, ?)`)
+        .bind(id, g)
+    ),
+  ];
+  // Atomic: a delete that landed without its inserts would drop the account out of
+  // every pool.
+  await env.DB.batch(statements);
+
+  return { status: 200, body: { ok: true, id, games: wanted, accounts: (await listAccounts(env, actor)).items } };
 }
 
 async function updateAccount(env, actor, id, body) {
@@ -529,6 +690,9 @@ async function listAllOrders(env, actor, query) {
     hours: o.hours,
     amount: o.amount,
     status: o.status,
+    // Shop-side note on the order (why it was refunded, what was agreed). Never
+    // shown to the customer — see migrations/0015_order_refund_note.sql.
+    note: o.note ?? null,
     accountLogin: o.account_login ?? null,
     extendsOrder: o.extends_order ?? null,
     createdAt: o.created_at,
@@ -554,7 +718,12 @@ async function summary(env, actor) {
               AND expires_at > strftime('%s','now')
               AND expires_at <= strftime('%s','now') + 86400) AS expiringSoon,
            (SELECT COUNT(*) FROM account_reports WHERE status = 'open') AS openReports,
-           (SELECT COALESCE(SUM(amount), 0) FROM orders WHERE paid_at IS NOT NULL) AS revenue`
+           (SELECT COALESCE(SUM(amount), 0) FROM orders
+             WHERE paid_at IS NOT NULL${revenueStatusSql()}) AS revenue,
+           -- Shown beside it: money that came in and went back out. Without this the
+           -- drop in revenue after a refund has no explanation on the page.
+           (SELECT COALESCE(SUM(amount), 0) FROM orders
+             WHERE paid_at IS NOT NULL AND status = 'refunded') AS refunded`
       ).first()) ?? {}
     );
   }
@@ -564,7 +733,7 @@ async function summary(env, actor) {
   const ids = actor?.groupIds ?? [];
   if (!ids.length) {
     return { accounts: 0, available: 0, rented: 0, sold: 0, disabled: 0, activeRentals: 0,
-             awaitingStock: 0, expiringSoon: 0, openReports: 0, revenue: 0 };
+             awaitingStock: 0, expiringSoon: 0, openReports: 0, revenue: 0, refunded: 0 };
   }
   const list = ids.map(() => '?').join(', ');
   const row = await env.DB.prepare(
@@ -585,7 +754,9 @@ async function summary(env, actor) {
        (SELECT COUNT(*) FROM account_reports r JOIN steam_accounts a ON a.id = r.account_id
          WHERE a.group_id IN (${list}) AND r.status = 'open') AS openReports,
        (SELECT COALESCE(SUM(o.amount), 0) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
-         WHERE a.group_id IN (${list}) AND o.paid_at IS NOT NULL) AS revenue`
+         WHERE a.group_id IN (${list}) AND o.paid_at IS NOT NULL${revenueStatusSql('o.')}) AS revenue,
+       (SELECT COALESCE(SUM(o.amount), 0) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
+         WHERE a.group_id IN (${list}) AND o.paid_at IS NOT NULL AND o.status = 'refunded') AS refunded`
   )
     .bind(...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids)
     .first();
@@ -789,7 +960,10 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
       if (!Number.isFinite(wantAddHours) || wantAddHours <= 0) return bad('bad_add_hours', 400);
       wantAddHours = Math.min(Math.floor(wantAddHours), 24 * 90);
     }
-    if (wantStatus === null && wantAccount === null && wantAddHours === null) {
+    // Editable on its own: recording why an order was refunded should not require
+    // touching its status again.
+    const wantNote = body?.note === undefined ? null : cleanText(body.note, 500);
+    if (wantStatus === null && wantAccount === null && wantAddHours === null && wantNote === null) {
       return bad('nothing_to_do', 400);
     }
 
@@ -805,7 +979,13 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
         .first();
       if (!account) return bad('unknown_account', 404);
       if (!mayTouchAccount(actor, account)) return bad('forbidden', 403);
-      if (account.game !== order.game) return bad('wrong_game', 409, { game: account.game });
+      // Membership, not the home game: an account whose library covers the order's
+      // game can serve it even when that is not the game it was imported under.
+      const owns = await env.DB
+        .prepare(`SELECT 1 AS ok FROM steam_account_games WHERE account_id = ? AND game = ?`)
+        .bind(account.id, order.game)
+        .first();
+      if (!owns?.ok) return bad('wrong_game', 409, { game: account.game });
 
       // Today this shop handed two customers accounts that were locked by Steam.
       // Refuse by default; --force stays available for a deliberate override.
@@ -909,6 +1089,12 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
       }
     }
 
+    if (wantNote !== null) {
+      statements.push(
+        env.DB.prepare(`UPDATE orders SET note = ? WHERE order_code = ?`).bind(wantNote || null, code)
+      );
+    }
+
     if (statements.length) await env.DB.batch(statements);
 
     const after = await env.DB.prepare(
@@ -964,7 +1150,7 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
        FROM orders o
        LEFT JOIN steam_accounts a ON a.id = o.account_id
        LEFT JOIN account_groups g ON g.id = a.group_id
-      WHERE o.paid_at IS NOT NULL
+      WHERE o.paid_at IS NOT NULL${revenueStatusSql('o.')}
         AND date(o.paid_at, 'unixepoch', '${TZ}') = ${dayExpr}
         ${ownerWide ? '' : 'AND o.account_id IS NOT NULL'}${where.sql}`
     )
@@ -1236,6 +1422,22 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
   }
 
   /* ── accounts ── */
+
+  if (path === '/api/admin/game-requests' && method === 'GET') {
+    // Owner-only: a manager's scope is their own accounts, and a game nobody
+    // stocks yet belongs to no group.
+    if (!isOwner(actor)) return bad('forbidden', 403);
+    return { status: 200, body: { items: await listGameRequests(env) } };
+  }
+
+  if (path === '/api/admin/game-requests/reply' && method === 'POST') {
+    if (!isOwner(actor)) return bad('forbidden', 403);
+    return replyToGameRequests(env, body);
+  }
+
+  if (path === '/api/admin/accounts/games' && method === 'POST') {
+    return setAccountGames(env, actor, body);
+  }
 
   if (path === '/api/admin/accounts') {
     if (method === 'GET') {

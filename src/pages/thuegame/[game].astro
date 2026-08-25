@@ -3,13 +3,27 @@ import Layout from '../../layouts/Layout.astro';
 import Header from '../../components/Header.astro';
 import Footer from '../../components/Footer.astro';
 import SectionTitle from '../../components/SectionTitle.astro';
-import { DEFAULT_GAME, GAMES, compactParts, formatVnd } from '../../data/rental-plans.js';
+import { GAMES, compactParts, formatVnd, gameFromSlug, gameIds, gameSlug } from '../../data/rental-plans.js';
+
+// One page per game, from one file: every game in the catalogue gets its own URL at
+// build time. The slug comes from the catalogue's own `path`, so /thuegame/theisle
+// keeps working exactly as before and a new game needs no new file.
+export function getStaticPaths() {
+  return gameIds().map((id) => ({ params: { game: gameSlug(id) } }));
+}
 
 // Card faces for the memory game — 8 pairs on a 4×4 board.
 const glyphs = ['⚔', '🗡', '✦', '⚱', '⚜', '🛡', '🔥', '💀'];
 
 // Plans are rendered at build time; live stock comes from /api/rent/plans.
-const rentalGame = GAMES[DEFAULT_GAME];
+const gameId = gameFromSlug(Astro.params.game);
+const rentalGame = GAMES[gameId];
+// Per-game palette, overriding the block's own custom properties. The rest of the
+// stylesheet reads those variables, so a game re-themes without touching any rule.
+const theme = rentalGame.theme
+  ? `--isle-bg:${rentalGame.theme.bg};--isle-bg-2:${rentalGame.theme.bg2};`
+    + `--isle-line:${rentalGame.theme.line};--isle-green:${rentalGame.theme.accent};`
+  : null;
 ---
 
 <Layout
@@ -147,7 +161,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
     <!-- The Isle rental, themed to match the shop's own artwork for it. The
          jungle palette is scoped to this block so the rest of the member area
          keeps the site's gold theme. -->
-    <section class="isle">
+    <section class="isle" data-game={gameId} style={theme}>
       <header class="isle-banner">
         <div class="isle-moon" aria-hidden="true"></div>
         <svg class="isle-ridge" viewBox="0 0 600 90" preserveAspectRatio="none" aria-hidden="true">
@@ -158,7 +172,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
         </svg>
         <p class="isle-kicker">— {rentalGame.kicker} —</p>
         <h3 class="isle-title">{rentalGame.name}</h3>
-        <p class="isle-subtitle">🦎 {rentalGame.subtitle} 🦎</p>
+        <p class="isle-subtitle">{rentalGame.flourish} {rentalGame.subtitle} {rentalGame.flourish}</p>
       </header>
 
       <p class="isle-blurb">{rentalGame.blurb}</p>
@@ -218,20 +232,17 @@ const rentalGame = GAMES[DEFAULT_GAME];
       <!-- Above the plan cards on purpose: this is the one limitation that can make
            renting the wrong choice, so it has to be read before "Thuê ngay" rather
            than sitting in the small print underneath. -->
-      <div class="rent-warning" role="note">
-        <p class="warn-title">⚠ LƯU Ý</p>
-        <p>
-          Acc cho thuê <strong>không hỗ trợ đăng nhập qua trang web hoặc PM bên thứ 3</strong>
-          để sử dụng voice chat hoặc các tính năng custom khác, tùy server khác nhau.
-        </p>
-        <p class="warn-advice">
-          👉 Ae nào muốn chơi những server bắt buộc sử dụng voice thì mình khuyên
-          <strong>nên mua acc luôn</strong> để chơi cho thoải mái nhé!
-        </p>
-      </div>
+      {rentalGame.warning && (
+        <div class="rent-warning" role="note">
+          <p class="warn-title">{rentalGame.warning.title}</p>
+          <p set:html={rentalGame.warning.body.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')} />
+          <p class="warn-advice" set:html={rentalGame.warning.advice.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')} />
+        </div>
+      )}
 
       <div
         class="plans"
+        data-game={gameId}
         data-plans={JSON.stringify(rentalGame.plans.map((p) => ({ id: p.id, label: p.label, amount: p.amount })))}
         data-purchase={rentalGame.purchase
           ? JSON.stringify({
@@ -295,6 +306,28 @@ const rentalGame = GAMES[DEFAULT_GAME];
         Thanh toán qua PayOS (chuyển khoản / QR ngân hàng). Tài khoản được cho thuê
         theo thời gian, vui lòng không đổi mật khẩu hoặc thông tin đăng nhập.
       </p>
+
+      <!-- Demand for games the shop does not carry. Below the plans on purpose: it is
+           for the customer who did not find what they came for, and putting it above
+           would offer a wish list to someone who could just buy. -->
+      <div class="gr" id="gameRequest">
+        <p class="gr-title">🎮 Không thấy game bạn muốn?</p>
+        <p class="gr-sub">
+          Gửi tên game bạn muốn thuê — shop sẽ ưu tiên nhập acc cho game nhiều người
+          yêu cầu nhất. Bạn sẽ thấy trạng thái ngay tại đây.
+        </p>
+        <p id="grNotice" class="gr-notice" hidden></p>
+        <div class="gr-form">
+          <label class="gr-label" for="grName">Tên game</label>
+          <input id="grName" type="text" maxlength="60" autocomplete="off"
+                 placeholder="vd: Rust, ARK, Dead by Daylight" />
+          <label class="gr-label" for="grNote">Ghi chú (không bắt buộc)</label>
+          <input id="grNote" type="text" maxlength="400" autocomplete="off"
+                 placeholder="vd: cần acc có DLC, chơi server VN" />
+          <button id="grSend" class="gr-btn" type="button">Gửi yêu cầu</button>
+        </div>
+        <div id="grMine" class="gr-mine" hidden></div>
+      </div>
     </div>
 
       <p class="isle-motto">{rentalGame.motto}</p>
@@ -707,6 +740,211 @@ const rentalGame = GAMES[DEFAULT_GAME];
     text-align: center;
   }
 
+  .gr {
+    margin-top: 18px;
+    padding: 16px;
+    background: var(--isle-bg-2);
+    border: 1px solid var(--isle-line);
+    border-radius: 4px;
+  }
+
+  .gr-title {
+    margin: 0 0 4px;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--isle-cream);
+  }
+
+  .gr-sub {
+    margin: 0 0 12px;
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: var(--text-muted);
+  }
+
+  .gr-form { display: flex; flex-direction: column; gap: 6px; }
+
+  .gr-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+
+  .gr-form input {
+    padding: 10px 12px;
+    font: inherit;
+    font-size: 13.5px;
+    color: var(--isle-cream);
+    background: var(--isle-bg);
+    border: 1px solid var(--isle-line);
+    border-radius: 3px;
+  }
+
+  .gr-form input:focus {
+    outline: none;
+    border-color: var(--isle-gold);
+  }
+
+  .gr-btn {
+    margin-top: 8px;
+    padding: 11px 16px;
+    font: inherit;
+    font-size: 13.5px;
+    font-weight: 700;
+    color: var(--isle-bg);
+    background: linear-gradient(180deg, var(--isle-cream) 0%, var(--isle-gold) 100%);
+    border: 1px solid var(--isle-gold);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .gr-btn:hover { filter: brightness(1.08); }
+  .gr-btn:disabled { opacity: 0.5; cursor: not-allowed; filter: none; }
+
+  .gr-notice {
+    margin: 0 0 10px;
+    padding: 9px 11px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    border-radius: 3px;
+    background: rgba(127, 174, 99, 0.12);
+    border: 1px solid var(--isle-green);
+    color: var(--isle-cream);
+  }
+
+  .gr-notice.error {
+    background: rgba(248, 113, 113, 0.1);
+    border-color: #f87171;
+    color: #ffd9d9;
+  }
+
+  .gr-mine {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--isle-line);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .gr-mine-title {
+    margin: 0 0 2px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-muted);
+  }
+
+  .gr-row {
+    padding: 11px 13px;
+    font-size: 12.5px;
+    background: var(--isle-bg);
+    border: 1px solid var(--isle-line);
+    /* The status colour lives on the left edge, so a list of several requests can be
+       scanned down that edge without reading a word of it. */
+    border-left: 3px solid var(--isle-line);
+    border-radius: 4px;
+  }
+
+  .gr-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px 9px;
+  }
+
+  .gr-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+  }
+
+  .gr-name {
+    color: var(--isle-cream);
+    font-size: 13.5px;
+    font-weight: 700;
+    /* Takes the space it needs and lets the meta group sit at the far end; when
+       there is not enough room for both, the whole group drops to the next line
+       together. */
+    flex: 0 1 auto;
+    min-width: 0;
+    word-break: break-word;
+  }
+
+  .gr-badge {
+    padding: 2px 9px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+    opacity: 0.95;
+  }
+
+  .gr-count {
+    padding: 2px 8px;
+    font-size: 11px;
+    color: var(--isle-cream);
+    background: rgba(232, 200, 119, 0.12);
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+
+  .gr-when {
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .gr-note {
+    margin: 7px 0 0;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-muted);
+    /* Their own words, quoted back — indented so it reads as a quote and not as a
+       second sentence from the shop. */
+    padding-left: 9px;
+    border-left: 2px solid var(--isle-line);
+  }
+
+  .gr-reply {
+    margin: 9px 0 0;
+    padding: 8px 10px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--isle-cream);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--isle-line);
+    border-radius: 3px;
+  }
+
+  .gr-reply strong { color: var(--text-muted); font-weight: 600; }
+  .gr-em { margin-right: 7px; }
+
+  /* One colour per state, on the edge and the badge together. */
+  .gr-row.gr-open { border-left-color: var(--isle-line); }
+  .gr-row.gr-open .gr-badge { color: var(--text-muted); }
+
+  .gr-row.gr-planned { border-left-color: var(--isle-gold); }
+  .gr-row.gr-planned .gr-badge { color: var(--isle-gold); }
+
+  .gr-row.gr-added { border-left-color: var(--isle-green); }
+  .gr-row.gr-added .gr-badge { color: var(--isle-green); }
+  /* The one state that is an invitation: it earns the brighter treatment, and it is
+     the only one whose reply is dressed as good news. */
+  .gr-row.gr-added { background: rgba(127, 174, 99, 0.07); }
+  .gr-row.gr-added .gr-reply {
+    background: rgba(127, 174, 99, 0.12);
+    border-color: var(--isle-green);
+  }
+
+  .gr-row.gr-declined { border-left-color: #6b5555; opacity: 0.75; }
+  .gr-row.gr-declined .gr-badge { color: #c99; }
+
   .isle-motto {
     padding: 20px 24px 26px;
     font-size: 11px;
@@ -1030,7 +1268,15 @@ const rentalGame = GAMES[DEFAULT_GAME];
     border-color: var(--gold);
   }
 
-  .rent-orders :global(.extend-btn:disabled) { opacity: 0.5; cursor: not-allowed; }
+  .rent-orders :global(.extend-btn:disabled) { opacity: 0.4; cursor: not-allowed; }
+
+  .rent-orders :global(.extend-why) {
+    flex: 1 1 100%;
+    margin: 8px 0 0;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--text-muted);
+  }
 
   .rent-orders :global(.upgrade) {
     width: 100%;
@@ -1070,6 +1316,37 @@ const rentalGame = GAMES[DEFAULT_GAME];
 
   .rent-orders :global(.upgrade-note) {
     flex: 1 1 220px;
+    margin: 0;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--text-muted);
+  }
+
+  .rent-orders :global(.addon) {
+    width: 100%;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--isle-line);
+  }
+
+  .rent-orders :global(.addon-row) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .rent-orders :global(.addon-game) {
+    flex: 0 0 100%;
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--isle-cream);
+  }
+
+  .rent-orders :global(.addon-note) {
+    flex: 1 1 200px;
     margin: 0;
     font-size: 11.5px;
     line-height: 1.6;
@@ -2177,6 +2454,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
     error: 'Lỗi đọc tài khoản',
     sold: 'Đã chuyển sang mua',
     upgraded: 'Đã nâng cấp gói',
+    refunded: 'Đã hoàn tiền',
   };
 
   let countdownTimer = null;
@@ -2300,6 +2578,8 @@ const rentalGame = GAMES[DEFAULT_GAME];
   }
 
   const RENT_PLANS = JSON.parse(document.querySelector('.plans').dataset.plans);
+  // Which game this page is. Everything the script asks the API for is scoped to it.
+  const GAME_ID = document.querySelector('.plans').dataset.game;
   const BUY_PLAN = document.querySelector('.plans').dataset.purchase
     ? JSON.parse(document.querySelector('.plans').dataset.purchase)
     : null;
@@ -2592,20 +2872,106 @@ const rentalGame = GAMES[DEFAULT_GAME];
     label.textContent = 'Gia hạn thêm:';
     wrap.appendChild(label);
 
+    // Which plans this rental's own login can serve, from the server — the page
+    // cannot see an account's tags. Missing (an older response) means "all", so a
+    // stale cache degrades to the previous behaviour rather than to no buttons.
+    const rules = new Map((order.extendPlans || []).map((p) => [p.id, p]));
+    let blocked = null;
+
     for (const plan of RENT_PLANS) {
+      const rule = rules.get(plan.id);
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'extend-btn';
       btn.textContent = plan.label + ' · ' + compact(plan.amount);
-      btn.addEventListener('click', () => startCheckout(plan.id, btn, order.orderCode));
+
+      if (rule && !rule.allowed) {
+        // Disabled rather than hidden: a customer on 1 ngày looking for the VOIP
+        // week should see it exists and learn that the way there is Nâng cấp, not
+        // be left wondering where it went.
+        btn.disabled = true;
+        btn.title = 'Acc đang thuê không đủ điều kiện cho gói này';
+        blocked = rule;
+      } else {
+        btn.addEventListener('click', () => startCheckout(plan.id, btn, order.orderCode));
+      }
       wrap.appendChild(btn);
+    }
+
+    if (blocked) {
+      const why = document.createElement('p');
+      why.className = 'extend-why';
+      why.textContent = blocked.upgradable
+        ? 'Gói mờ cần acc đặc biệt (no_ban) nên không gia hạn được trên acc này — '
+          + 'muốn dùng thì bấm “Nâng cấp gói” bên dưới, shop sẽ đổi sang acc phù hợp.'
+        : 'Gói mờ cần acc đặc biệt nên không gia hạn được trên acc đang thuê.';
+      wrap.appendChild(why);
     }
 
     // Buying is only offered on an account the shop is willing to part with — a
     // vetted no_ban one. `forSale` comes from the server, which alone can read the
     // internal_note the tag lives in.
     if (BUY_PLAN && order.forSale) wrap.appendChild(buyControls(order));
+    // Other games this very login can play. Server-built: which games an account's
+    // library covers, and which are already running on it, are both things the page
+    // cannot know.
+    if (order.addonGames?.length) wrap.appendChild(addonControls(order));
     return wrap;
+  }
+
+  /**
+   * Renting another game on the account this rental already uses.
+   *
+   * Separate from the extend and upgrade rows because it is neither: the login does
+   * not change, nothing is claimed from the pool, and the new game runs on its own
+   * clock. Which is exactly what has to be said on the button, or it reads like a
+   * second account.
+   */
+  function addonControls(order) {
+    const box = document.createElement('div');
+    box.className = 'addon';
+
+    const label = document.createElement('span');
+    label.className = 'extend-label';
+    label.textContent = 'Thuê thêm game trên acc này:';
+    box.appendChild(label);
+
+    for (const game of order.addonGames) {
+      const row = document.createElement('div');
+      row.className = 'addon-row';
+
+      const title = document.createElement('p');
+      title.className = 'addon-game';
+      title.textContent = '🎮 ' + game.name;
+      row.appendChild(title);
+
+      for (const plan of game.plans) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'extend-btn';
+        btn.textContent = (plan.icon ? plan.icon + ' ' : '') + plan.label + ' · ' + compact(plan.amount);
+        btn.addEventListener('click', () => {
+          if (btn.dataset.confirming !== '1') {
+            btn.dataset.confirming = '1';
+            btn.dataset.label = btn.textContent;
+            btn.textContent = 'Xác nhận ' + compact(plan.amount) + '?';
+            note.textContent = 'Bấm lần nữa để tạo đơn. Vẫn dùng chung login đang thuê — '
+              + 'không có tài khoản mới, và hạn của ' + game.name + ' tính riêng.';
+            return;
+          }
+          startCheckout(plan.id, btn, null, null, null, order.orderCode);
+        });
+        row.appendChild(btn);
+      }
+
+      const note = document.createElement('p');
+      note.className = 'addon-note';
+      note.textContent = 'Giữ nguyên tài khoản đang thuê, chỉ mở thêm ' + game.name + '.';
+      row.appendChild(note);
+      box.appendChild(row);
+    }
+
+    return box;
   }
 
   /**
@@ -2711,6 +3077,186 @@ const rentalGame = GAMES[DEFAULT_GAME];
     return box;
   }
 
+  /* ─── "please rent this game too" ──────────── */
+
+  function grNotice(message, isError) {
+    const box = el('grNotice');
+    if (!box) return;
+    box.textContent = message;
+    box.classList.toggle('error', Boolean(isError));
+    box.hidden = false;
+  }
+
+  // The customer's own asks, with the running total and any reply. Rendered from the
+  // same /api/rent/orders payload the rentals come from, so it stays in step without
+  // a second request.
+  // A status is worth a colour and an icon: "Đang xem xét" and "Đã có" mean opposite
+  // things to somebody checking back, and reading them as identical grey text is how
+  // a customer misses that their game is now rentable.
+  const GR_STATES = {
+    open:     { icon: '⏳', cls: 'gr-open' },
+    planned:  { icon: '📦', cls: 'gr-planned' },
+    added:    { icon: '✅', cls: 'gr-added' },
+    declined: { icon: '✕',  cls: 'gr-declined' },
+  };
+
+  function prettyGameName(name) {
+    // Capitalised ONLY when it was typed all in lower case: "palworld" reads as
+    // sloppy coming back from the shop, while "ARK", "PoE 2" and "DayZ" are how
+    // those games are actually written and must survive untouched.
+    if (name !== name.toLowerCase()) return name;
+    return name.replace(/(^|\s)(\S)/g, (m, sp, ch) => sp + ch.toUpperCase());
+  }
+
+  function grDate(ts) {
+    if (!ts) return '';
+    const days = Math.floor((Date.now() / 1000 - ts) / 86400);
+    // Recent asks are the ones being checked on, so say it in the terms somebody
+    // thinks in; anything older gets a date, which is more useful than "37 ngày".
+    if (days <= 0) return 'hôm nay';
+    if (days === 1) return 'hôm qua';
+    if (days < 7) return days + ' ngày trước';
+    return fmtWhen(ts).split(' ').slice(-1)[0];
+  }
+
+  function renderGameRequests(list) {
+    const box = el('grMine');
+    if (!box) return;
+    box.textContent = '';
+    if (!list.length) {
+      box.hidden = true;
+      return;
+    }
+
+    const head = document.createElement('p');
+    head.className = 'gr-mine-title';
+    head.textContent = 'Yêu cầu của bạn (' + list.length + ')';
+    box.appendChild(head);
+
+    for (const r of list) {
+      const state = GR_STATES[r.status] || GR_STATES.open;
+      const row = document.createElement('div');
+      row.className = 'gr-row ' + state.cls;
+
+      // Line one: what they asked for, and where it stands.
+      const top = document.createElement('div');
+      top.className = 'gr-top';
+
+      const name = document.createElement('strong');
+      name.className = 'gr-name';
+      name.textContent = prettyGameName(r.name);
+
+      const badge = document.createElement('span');
+      badge.className = 'gr-badge';
+      const badgeIcon = document.createElement('span');
+      badgeIcon.className = 'gr-em';
+      badgeIcon.textContent = state.icon;
+      badge.append(badgeIcon, document.createTextNode(' ' + r.statusLabel));
+
+      // Badge, count and date live in their own row so that on a narrow screen they
+      // wrap together onto a second line, rather than each claiming a line of its
+      // own — which is what three stacked pills looked like at 352px.
+      const meta = document.createElement('span');
+      meta.className = 'gr-meta';
+      meta.appendChild(badge);
+
+      top.append(name, meta);
+
+      // Only when somebody else actually wants it too. "bạn là người đầu tiên" on
+      // every row was noise; the interesting case is the count going up.
+      if (r.total > 1) {
+        const count = document.createElement('span');
+        count.className = 'gr-count';
+        const countIcon = document.createElement('span');
+        countIcon.className = 'gr-em';
+        countIcon.textContent = '👥';
+        count.append(countIcon, document.createTextNode(' + ' + (r.total - 1) + ' người cùng muốn'));
+        meta.appendChild(count);
+      }
+
+      const when = document.createElement('span');
+      when.className = 'gr-when';
+      when.textContent = grDate(r.createdAt);
+      meta.appendChild(when);
+      row.appendChild(top);
+
+      // Their own note, which the form collects and nothing showed back until now.
+      if (r.note) {
+        const note = document.createElement('p');
+        note.className = 'gr-note';
+        note.textContent = r.note;
+        row.appendChild(note);
+      }
+
+      // The shop's answer, given its own block: it is the one thing on this row
+      // worth coming back to read.
+      if (r.reply) {
+        const reply = document.createElement('p');
+        reply.className = 'gr-reply';
+        const replyIcon = document.createElement('span');
+        replyIcon.className = 'gr-em';
+        replyIcon.textContent = '💬';
+        const who = document.createElement('strong');
+        who.textContent = 'Shop: ';
+        reply.append(replyIcon, who, document.createTextNode(' ' + r.reply));
+        row.appendChild(reply);
+      }
+      box.appendChild(row);
+    }
+    box.hidden = false;
+  }
+
+  const GR_ERRORS = {
+    game_name_required: 'Nhập tên game bạn muốn thuê nhé.',
+    too_many_open: 'Bạn đang có nhiều yêu cầu đang chờ — shop sẽ trả lời sớm.',
+    unauthorized: 'Phiên đăng nhập đã hết. Vui lòng đăng nhập lại.',
+    rentals_not_configured: 'Tính năng này chưa được cấu hình.',
+  };
+
+  el('grSend')?.addEventListener('click', async () => {
+    const btn = el('grSend');
+    const nameInput = el('grName');
+    const gameName = nameInput.value.trim();
+    if (!gameName) return grNotice(GR_ERRORS.game_name_required, true);
+
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = 'Đang gửi…';
+    try {
+      const res = await fetch('/api/rent/request-game', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ gameName, note: el('grNote').value.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok) {
+        grNotice(
+          data.updated
+            ? 'Đã cập nhật yêu cầu của bạn cho game này.'
+            : 'Đã gửi! Shop sẽ ưu tiên game được nhiều người yêu cầu nhất.',
+          false
+        );
+        nameInput.value = '';
+        el('grNote').value = '';
+        // Re-read rather than patching a local list: the total counts everyone, so
+        // only the server knows it.
+        await loadRentals();
+      } else if (data.error === 'already_rentable') {
+        // They asked for something already on sale — that is good news, so say where.
+        grNotice('Game này đã cho thuê rồi: ' + data.name + ' — xem tại ' + data.path, false);
+      } else {
+        grNotice(GR_ERRORS[data.error] || 'Không gửi được yêu cầu. Thử lại sau nhé.', true);
+      }
+    } catch {
+      grNotice('Không kết nối được máy chủ. Thử lại sau nhé.', true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  });
+
   function startCountdowns() {
     clearInterval(countdownTimer);
     const tick = () => {
@@ -2729,7 +3275,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
   }
 
   // Statuses that are done moving — polling can stop once an order reaches one.
-  const TERMINAL = new Set(['active', 'expired', 'cancelled', 'payment_expired', 'awaiting_stock', 'error', 'extended', 'upgraded']);
+  const TERMINAL = new Set(['active', 'expired', 'cancelled', 'payment_expired', 'awaiting_stock', 'error', 'extended', 'upgraded', 'refunded']);
 
   async function loadRentals() {
     const list = el('rentOrders');
@@ -2748,6 +3294,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
       // optimistic entry into this same array right after a successful send.
       reports.length = 0;
       reports.push(...(data.reports || []));
+      renderGameRequests(data.gameRequests || []);
 
       list.textContent = '';
       // Finished and abandoned orders are noise once they are done; the notice
@@ -2755,7 +3302,10 @@ const rentalGame = GAMES[DEFAULT_GAME];
       const relevant = (orders || []).filter(
         // 'upgraded' is the rental a paid upgrade replaced: its successor is in this
         // same list, active and on the new plan, so showing both reads as two rentals.
-        (o) => !['expired', 'cancelled', 'payment_expired', 'extended', 'upgraded'].includes(o.status)
+        // 'refunded' is hidden with the rest of the finished ones: the rental is over
+        // and the money is back, so leaving it on the page invites "where is my
+        // account?" — the outcome was already announced when it happened.
+        (o) => !['expired', 'cancelled', 'payment_expired', 'extended', 'upgraded', 'refunded'].includes(o.status)
       );
       for (const order of relevant) list.appendChild(renderOrder(order));
       // While the payment form is open, the same order also showing a
@@ -2941,6 +3491,12 @@ const rentalGame = GAMES[DEFAULT_GAME];
             order.orderCode + ' để được xếp tài khoản hoặc hoàn tiền.',
           true
         );
+      case 'refunded':
+        return rentNotice(
+          'Đơn ' + order.orderCode + ' đã được hoàn tiền. Tài khoản đã được thu hồi — '
+            + 'nếu bạn chưa nhận được tiền, liên hệ shop kèm mã đơn nhé.',
+          true
+        );
       case 'cancelled':
         return rentNotice('Bạn đã huỷ thanh toán. Chưa có khoản nào bị trừ.', false);
       case 'payment_expired':
@@ -3071,7 +3627,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
 
   async function loadStock() {
     try {
-      const res = await fetch('/api/rent/plans', { credentials: 'same-origin' });
+      const res = await fetch('/api/rent/plans?game=' + encodeURIComponent(GAME_ID), { credentials: 'same-origin' });
       if (!res.ok) throw new Error(String(res.status));
       const data = await res.json();
       applyPlanStock(data.plans);
@@ -3143,7 +3699,7 @@ const rentalGame = GAMES[DEFAULT_GAME];
     return Number.isInteger(n) && n >= 1 ? n : 1;
   }
 
-  async function startCheckout(planId, button, extendOrderCode = null, buyOrderCode = null, upgradeOrderCode = null) {
+  async function startCheckout(planId, button, extendOrderCode = null, buyOrderCode = null, upgradeOrderCode = null, addonOrderCode = null) {
     button.disabled = true;
     try {
       const res = await fetch('/api/rent/checkout', {
@@ -3154,10 +3710,12 @@ const rentalGame = GAMES[DEFAULT_GAME];
           planId,
           // Only a plain rental has a quantity; extending or buying acts on one
           // existing rental, and the server rejects a count there.
-          ...(extendOrderCode || buyOrderCode || upgradeOrderCode ? {} : { quantity: quantityFor(planId) }),
+          ...(extendOrderCode || buyOrderCode || upgradeOrderCode || addonOrderCode
+            ? {} : { quantity: quantityFor(planId) }),
           ...(extendOrderCode ? { extendOrderCode } : {}),
           ...(buyOrderCode ? { buyOrderCode } : {}),
           ...(upgradeOrderCode ? { upgradeOrderCode } : {}),
+          ...(addonOrderCode ? { addonOrderCode } : {}),
         }),
       });
       const data = await res.json();
@@ -3184,6 +3742,22 @@ const rentalGame = GAMES[DEFAULT_GAME];
       } else if (data.error === 'out_of_stock') {
         rentNotice('Vừa hết tài khoản trống. Vui lòng quay lại sau.', true);
         await loadStock();
+      } else if (data.error === 'extend_needs_tagged_account') {
+        // Only reachable from a stale page — the button is disabled — so reload the
+        // rentals to bring the rules back in step.
+        rentNotice(
+          data.upgradable
+            ? 'Gói này cần acc đặc biệt (no_ban): hãy dùng “Nâng cấp gói” để shop đổi acc phù hợp.'
+            : 'Gói này không gia hạn được trên acc đang thuê.',
+          true
+        );
+        await loadRentals();
+      } else if (data.error === 'account_lacks_game') {
+        rentNotice('Acc đang thuê không có game này. Đang tải lại danh sách…', true);
+        await loadRentals();
+      } else if (data.error === 'game_already_rented') {
+        rentNotice('Game này đã được thuê trên acc đó rồi.', true);
+        await loadRentals();
       } else if (data.error === 'upgrade_not_allowed') {
         // The ladder is server-side, so this only happens if the page is stale —
         // most likely the rental was already upgraded in another tab.

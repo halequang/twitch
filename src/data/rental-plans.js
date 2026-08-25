@@ -17,6 +17,20 @@ export const GAMES = {
     blurb: 'Trải nghiệm cuộc sống khủng long chân thực',
     tagline: 'Săn mồi — Sinh tồn — Chinh phục hòn đảo',
     motto: 'Survive. Hunt. Rule the Isle.',
+    // Page-level trimmings. In data rather than in the template because one page
+    // now serves every game (src/pages/thuegame/[game].astro), so anything that
+    // differs per game has to be readable from here.
+    flourish: '🦎',
+    theme: { bg: '#0c1a10', bg2: '#101f14', line: '#2c4a2f', accent: '#7fae63' },
+    // The one limitation that can make renting the wrong choice, so the page puts
+    // it ABOVE the plan cards rather than in small print underneath.
+    warning: {
+      title: '⚠ LƯU Ý',
+      body: 'Acc cho thuê **không hỗ trợ đăng nhập qua trang web hoặc PM bên thứ 3** '
+        + 'để sử dụng voice chat hoặc các tính năng custom khác, tùy server khác nhau.',
+      advice: '👉 Ae nào muốn chơi những server bắt buộc sử dụng voice thì mình khuyên '
+        + '**nên mua acc luôn** để chơi cho thoải mái nhé!',
+    },
     features: [
       'Acc chính chủ Steam',
       'Chơi được mọi server',
@@ -77,7 +91,88 @@ export const GAMES = {
       note: 'Sở hữu vĩnh viễn · bàn giao cả email',
     },
   },
+
+  poe2: {
+    name: 'Path of Exile 2',
+    path: '/thuegame/poe2',
+    kicker: 'Dịch vụ cho thuê',
+    subtitle: 'Action RPG',
+    blurb: 'Cày build, farm map, leo ladder trên acc sẵn sàng',
+    tagline: 'Săn boss — Farm currency — Leo ladder',
+    motto: 'Exile. Endure. Ascend.',
+    flourish: '⚡',
+    theme: { bg: '#120e1c', bg2: '#171126', line: '#3b2f5c', accent: '#9d7bd8' },
+    features: [
+      'Acc chính chủ Steam',
+      'Early Access sẵn sàng',
+      'Bàn giao nhanh < 5 phút',
+      'Hỗ trợ setup từ A đến Z',
+      'Không giới hạn giờ chơi',
+      'Bảo hành trong suốt gói thuê',
+    ],
+    plans: [
+      {
+        id: 'poe2-1d',
+        kicker: 'Gói thử nghiệm',
+        label: '1 ngày',
+        icon: '🧪',
+        hours: 24,
+        amount: 20000,
+        note: 'Trải nghiệm không rủi ro',
+      },
+      {
+        id: 'poe2-7d',
+        kicker: 'Gói khuyến nghị',
+        label: '1 tuần',
+        icon: '⚔️',
+        hours: 24 * 7,
+        amount: 50000,
+        note: 'Chỉ ~7k / ngày — rẻ hơn 65%',
+        badge: '🔥 Tiết kiệm',
+        featured: true,
+      },
+    ],
+    purchase: {
+      id: 'poe2-buy',
+      label: 'Mua acc này',
+      icon: '👑',
+      hours: 0,
+      amount: 190000,
+      purchase: true,
+      note: 'Sở hữu vĩnh viễn · bàn giao cả email',
+    },
+  },
 };
+
+/**
+ * The game a plan id belongs to, or null.
+ *
+ * Needed because a second-game rental picks its game BY the plan the customer
+ * clicked, so the plan has to be able to name its own game rather than the caller
+ * being trusted to pass a matching pair.
+ */
+export function gameOfPlan(planId) {
+  for (const [id, game] of Object.entries(GAMES)) {
+    if (game.purchase?.id === planId) return id;
+    if (game.plans.some((p) => p.id === planId)) return id;
+  }
+  return null;
+}
+
+/** Every game the shop rents, in catalogue order. */
+export function gameIds() {
+  return Object.keys(GAMES);
+}
+
+/** The URL slug a game's page is served at ('the-isle' → 'theisle'). */
+export function gameSlug(gameId) {
+  return String(GAMES[gameId]?.path || '').split('/').filter(Boolean).pop() || gameId;
+}
+
+/** The game a slug belongs to, or null. Reverse of gameSlug. */
+export function gameFromSlug(slug) {
+  return gameIds().find((id) => gameSlug(id) === slug) ?? null;
+}
 
 /**
  * Accounts tagged in `internal_note` may only be rented on the plans listed here.

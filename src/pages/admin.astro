@@ -84,6 +84,27 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       </div>
     </section>
 
+    <!-- What customers asked for that the shop does not carry. Below the report
+         card because nobody is stuck — it is a buying decision, not an incident —
+         but above the inventory, since it is what the inventory should grow into. -->
+    <section id="gameReqWrap" class="card reports" hidden>
+      <div class="soon-head">
+        <h2 class="head" style="margin:0">🎮 Khách muốn thuê game mới</h2>
+        <span class="soon-window" id="gameReqCount"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Game</th><th class="right">Số khách</th><th>Ghi chú mới nhất</th>
+              <th>Trạng thái</th><th>Trả lời khách</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="gameReqBody"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="expiringWrap" class="card soon" hidden>
       <div class="soon-head">
         <h2 class="head" style="margin:0">⏳ Sắp hết hạn</h2>
@@ -185,6 +206,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
         <option value="upgraded">upgraded</option>
         <option value="expired">expired</option>
         <option value="cancelled">cancelled</option>
+        <option value="refunded">refunded</option>
         <option value="payment_expired">payment_expired</option>
         <option value="awaiting_stock">awaiting_stock</option>
         <option value="sold">sold</option>
@@ -848,6 +870,8 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
   .tbl :global(.pill.payment_expired) { background: var(--ad-line-soft); color: var(--ad-text-mute); }
   .tbl :global(.pill.extended)  { background: var(--ad-accent-soft); color: var(--ad-accent); }
   .tbl :global(.pill.awaiting_stock) { background: var(--ad-red-soft); color: var(--ad-red); }
+  /* Money returned: read as "closed, not earned" rather than as a failure. */
+  .tbl :global(.pill.refunded)      { background: #ede9fe; color: #5b32b8; }
   .tbl :global(.pill.error)     { background: var(--ad-red-soft); color: var(--ad-red); }
 
   /* ─── buttons ──────────────────────────────── */
@@ -1036,6 +1060,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       [s.openReports, 'Khách báo lỗi'],
       [s.awaitingStock, 'Chờ xử lý'],
       [fmtVnd(s.revenue), 'Doanh thu'],
+      ...(s.refunded ? [[fmtVnd(s.refunded), 'Đã hoàn tiền']] : []),
     ];
     const box = el('stats');
     box.textContent = '';
@@ -1181,14 +1206,39 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     const statusLabel = document.createElement('label');
     statusLabel.textContent = 'Trạng thái';
     const status = document.createElement('select');
-    for (const value of ['active', 'expired', 'cancelled', 'awaiting_stock']) {
+    // Same list as ORDER_STATUSES in src/lib/admin.js — anything else is refused
+    // there. 'refunded' releases the account and drops the sale out of revenue.
+    const SETTABLE = ['active', 'expired', 'cancelled', 'awaiting_stock', 'refunded'];
+    // An order can HOLD a status no admin may set: pending, extended,
+    // payment_expired, sold, upgraded, error. With none of the options matching, the
+    // browser shows the first one — 'active' — as if that were the current state, and
+    // the save below then sends it as a change. Editing only the note on a sold or
+    // extended order would have silently reactivated it, and for a sold one that
+    // means pulling the account back into a rental. So the real status leads the
+    // list, selected and disabled: it shows what the order IS and cannot be re-picked.
+    const options = SETTABLE.includes(order.status) ? SETTABLE : [order.status, ...SETTABLE];
+    for (const value of options) {
       const opt = document.createElement('option');
       opt.value = value;
-      opt.textContent = value;
-      if (value === order.status) opt.selected = true;
+      opt.textContent = SETTABLE.includes(value) ? value : value + ' (không đổi được)';
+      if (value === order.status) {
+        opt.selected = true;
+        if (!SETTABLE.includes(value)) opt.disabled = true;
+      }
       status.appendChild(opt);
     }
     statusLabel.appendChild(status);
+
+    // Why this order ended up where it did — the refund reason, what was agreed.
+    // Shop-side only: the customer never sees it.
+    const noteLabel = document.createElement('label');
+    noteLabel.textContent = 'Ghi chú (nội bộ)';
+    const note = document.createElement('input');
+    note.type = 'text';
+    note.maxLength = 500;
+    note.value = order.note || '';
+    note.placeholder = 'vd: hoàn tiền vì acc bị lock — đã CK lại 20k';
+    noteLabel.appendChild(note);
 
     const acctLabel = document.createElement('label');
     acctLabel.textContent = 'Tài khoản';
@@ -1261,10 +1311,14 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       if (account.value) payload.accountId = Number(account.value);
       const extra = Number(addHours.value);
       if (extra > 0) payload.addHours = extra;
+      // Sent only when actually edited, so an untouched note is not rewritten on
+      // every save — and so clearing it stays possible (empty string, not omitted).
+      if (note.value !== (order.note || '')) payload.note = note.value;
       // `hours` rides along on every save but only takes effect on a
       // reactivation, so it must not count as a change on its own — otherwise
       // every "Lưu" would look like an edit. addHours does count.
-      if (payload.status === undefined && payload.accountId === undefined && payload.addHours === undefined) {
+      if (payload.status === undefined && payload.accountId === undefined
+          && payload.addHours === undefined && payload.note === undefined) {
         notice('Chưa có gì thay đổi.', true);
         save.disabled = false;
         return;
@@ -1300,7 +1354,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
     // addLabel belongs here: it was built but never appended, so the field existed
     // in code and nowhere on screen.
-    form.append(statusLabel, acctLabel, hoursLabel, addLabel, save, cancel);
+    form.append(statusLabel, acctLabel, hoursLabel, addLabel, noteLabel, save, cancel);
     td.appendChild(form);
     tr.appendChild(td);
     afterRow.insertAdjacentElement('afterend', tr);
@@ -1491,6 +1545,84 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       } else {
         actions.textContent = 'đã xử lý' + (r.resolvedBy ? ' · ' + r.resolvedBy : '');
       }
+      tr.appendChild(actions);
+      body.appendChild(tr);
+    }
+  }
+
+  // Demand for games the shop does not stock. Owner-only server-side, so a manager
+  // simply never sees the card rather than seeing an error.
+  async function loadGameRequests() {
+    const wrap = el('gameReqWrap');
+    if (!wrap) return;
+    let items = [];
+    try {
+      items = (await api('game-requests')).items || [];
+    } catch (err) {
+      // 403 for a manager is expected, not a failure worth shouting about.
+      wrap.hidden = true;
+      return;
+    }
+    const body = el('gameReqBody');
+    body.textContent = '';
+    el('gameReqCount').textContent = items.length
+      ? items.reduce((n, r) => n + r.total, 0) + ' yêu cầu · ' + items.length + ' game'
+      : '';
+    wrap.hidden = items.length === 0;
+
+    for (const r of items) {
+      const tr = document.createElement('tr');
+      cell(tr, r.name);
+      cell(tr, String(r.total)).className = 'right';
+      cell(tr, r.note || '—');
+
+      const stateTd = document.createElement('td');
+      const select = document.createElement('select');
+      for (const [value, label] of [
+        ['open', 'Đang xem xét'], ['planned', 'Sắp có'],
+        ['added', 'Đã có'], ['declined', 'Chưa phục vụ'],
+      ]) {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = label;
+        if (value === r.status) opt.selected = true;
+        select.appendChild(opt);
+      }
+      stateTd.appendChild(select);
+      tr.appendChild(stateTd);
+
+      const replyTd = document.createElement('td');
+      const reply = document.createElement('input');
+      reply.type = 'text';
+      reply.maxLength = 400;
+      reply.value = r.reply || '';
+      reply.placeholder = 'vd: đang nhập acc, tuần sau có';
+      replyTd.appendChild(reply);
+      tr.appendChild(replyTd);
+
+      const actions = document.createElement('td');
+      actions.className = 'right';
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.className = 'mini';
+      save.textContent = 'Lưu';
+      save.addEventListener('click', async () => {
+        save.disabled = true;
+        try {
+          // One save answers everyone who asked for this game — the reply is keyed
+          // on the game, not on whoever happened to ask first.
+          await api('game-requests/reply', {
+            method: 'POST',
+            body: JSON.stringify({ gameKey: r.gameKey, status: select.value, reply: reply.value }),
+          });
+          notice('Đã trả lời ' + r.total + ' khách yêu cầu ' + r.name + '.', false);
+          await loadGameRequests();
+        } catch (err) {
+          notice('Không lưu được: ' + (err.data?.error || err.message), true);
+          save.disabled = false;
+        }
+      });
+      actions.appendChild(save);
       tr.appendChild(actions);
       body.appendChild(tr);
     }
@@ -2109,7 +2241,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       // Through the paged loaders, so the pagers reflect the current page and query
       // rather than being blank until the first interaction.
       await Promise.all([loadAccountsPage(), loadOrdersPage()]);
-      await Promise.all([loadExpiring(), loadReports(), loadReport()]);
+      await Promise.all([loadExpiring(), loadReports(), loadReport(), loadGameRequests()]);
       if (IS_OWNER) {
         try {
           renderManagers((await api('managers')).managers);

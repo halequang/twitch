@@ -83,6 +83,33 @@ async function sendTelegram(env, text) {
  * throwing on a failed send: the report is already stored, and telling the
  * customer their report failed because a chat bot is misconfigured would be a lie.
  */
+/**
+ * "A customer wants a game we do not carry."
+ *
+ * Carries the running total, because the number is the decision: one ask is a
+ * curiosity, five for the same game is a reason to go and buy accounts.
+ */
+export async function sendGameRequestNotice(env, request) {
+  if (!telegramConfigured(env)) return false;
+
+  const lines = [
+    '🎮 <b>Khách muốn thuê game mới</b>',
+    '',
+    `Game: <b>${escapeHtml(request.name)}</b>`,
+    `Đã có <b>${request.total}</b> khách yêu cầu game này`,
+    `Khách: ${escapeHtml(request.userEmail || 'không có email')}`,
+  ];
+  if (request.note) lines.push('', `Ghi chú: ${escapeHtml(request.note)}`);
+
+  try {
+    await sendTelegram(env, lines.join('\n'));
+    return true;
+  } catch (err) {
+    console.error('game request notice failed:', err?.message || err);
+    return false;
+  }
+}
+
 export async function sendReportNotice(env, report) {
   if (!telegramConfigured(env)) return false;
 

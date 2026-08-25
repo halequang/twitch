@@ -302,6 +302,7 @@ const rentalDevMiddleware = {
             body,
             cookie: req.headers.cookie,
             origin: `http://${req.headers.host || 'localhost:4321'}`,
+            query: new URL(req.url, 'http://localhost').searchParams,
             env,
           });
           send(status, out);
