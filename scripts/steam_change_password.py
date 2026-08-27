@@ -1103,7 +1103,15 @@ def load_accounts_from_db(remote, key, force=False, force_all=False):
            "JOIN orders o ON o.account_id = sa.id AND o.status = 'expired' "
            f"WHERE sa.status = 'available'{'' if force else TOO_RECENT_SQL}"
            f"{'' if force_all else NOT_HELD_SINCE_SQL} "
-           "GROUP BY sa.id")
+           "GROUP BY sa.id "
+           # Most recently released rental first. The password of an account whose
+           # renter left an hour ago is the one still fresh in somebody's hands, so
+           # it is the one worth changing first — and if a sweep is cut short (a
+           # browser dies, the machine sleeps, someone Ctrl-Cs it), what got done is
+           # the recent leavers rather than an arbitrary slice by account id.
+           # NULLs sort last under DESC in SQLite, which is where an unknown release
+           # time belongs.
+           "ORDER BY last_expired DESC")
     accounts = []
     for r in _d1(sql, remote):
         enc = r.get("password_enc") or ""
@@ -2476,7 +2484,12 @@ def main():
 
     for n, acc in enumerate(todo, start=1):
         user = acc["steam_user"]
-        print(f"\n===== [{n}/{len(todo)}] {user} =====")
+        # The release time is in the header because it is what the queue is ordered
+        # by: without it, "why this account now" is unanswerable from the log.
+        freed = acc.get("last_expired")
+        when = (f" — rental ended {datetime.fromtimestamp(int(freed)).strftime('%Y-%m-%d %H:%M')}"
+                if freed else "")
+        print(f"\n===== [{n}/{len(todo)}] {user}{when} =====")
 
         # Already rotated today, by this run's own earlier pass or by the other copy
         # of this script on another machine. Checked here as well as in the selection
