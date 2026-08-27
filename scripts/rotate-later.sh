@@ -3,6 +3,11 @@
 # Run the rental password rotation ONCE, after a delay.
 #
 #   scripts/rotate-later.sh              # in 1 hour, --db --remote --force
+#
+# The default --force re-does accounts the result file already lists; it does NOT
+# waive the 24-hour rotation interval (only --force-interval does), so a delayed
+# run landing on an account rotated this morning skips it rather than burning a
+# second Steam Guard email on it.
 #   scripts/rotate-later.sh 30m          # in 30 minutes
 #   scripts/rotate-later.sh 2h -- --yes  # in 2 hours, with --yes instead of --force
 #   scripts/rotate-later.sh --status     # is one pending? when does it fire?

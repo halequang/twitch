@@ -1345,6 +1345,20 @@ const theme = rentalGame.theme
     color: var(--isle-cream);
   }
 
+  /* The old price, struck through beside the addon price. Muted and a shade
+     smaller so the number being charged still reads first. */
+  .rent-orders :global(.extend-btn .was-price) {
+    margin-right: 2px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-decoration: line-through;
+  }
+
+  .rent-orders :global(.extend-btn.has-discount) { border-color: var(--gold); }
+
+  .rent-orders :global(.extend-btn .now-price) { font-weight: 700; }
+
   .rent-orders :global(.addon-note) {
     flex: 1 1 200px;
     margin: 0;
@@ -2945,11 +2959,31 @@ const theme = rentalGame.theme
       title.textContent = '🎮 ' + game.name;
       row.appendChild(title);
 
+      // `fullAmount` is the shelf price and is sent ONLY when the addon price is
+      // lower, so its presence is the whole "is there a discount" test. Both figures
+      // come from the server: the button never works a price out, and the confirm
+      // step below repeats the one that will actually be charged.
+      let discounted = false;
       for (const plan of game.plans) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'extend-btn';
-        btn.textContent = (plan.icon ? plan.icon + ' ' : '') + plan.label + ' · ' + compact(plan.amount);
+        // Assembled from nodes, not one string: the old price needs its own element
+        // to be struck through.
+        btn.append((plan.icon ? plan.icon + ' ' : '') + plan.label + ' · ');
+        if (plan.fullAmount) {
+          discounted = true;
+          const was = document.createElement('s');
+          was.className = 'was-price';
+          was.textContent = compact(plan.fullAmount);
+          btn.append(was, ' ');
+          btn.classList.add('has-discount');
+        }
+        const price = document.createElement('span');
+        price.className = 'now-price';
+        price.textContent = compact(plan.amount);
+        btn.append(price);
+
         btn.addEventListener('click', () => {
           if (btn.dataset.confirming !== '1') {
             btn.dataset.confirming = '1';
@@ -2966,7 +3000,8 @@ const theme = rentalGame.theme
 
       const note = document.createElement('p');
       note.className = 'addon-note';
-      note.textContent = 'Giữ nguyên tài khoản đang thuê, chỉ mở thêm ' + game.name + '.';
+      note.textContent = 'Giữ nguyên tài khoản đang thuê, chỉ mở thêm ' + game.name + '.'
+        + (discounted ? ' Giá game thứ 2 đã được giảm sẵn.' : '');
       row.appendChild(note);
       box.appendChild(row);
     }
@@ -3527,7 +3562,7 @@ const theme = rentalGame.theme
     for (const plan of plans || []) {
       const btn = document.querySelector('.rent-btn[data-plan="' + plan.id + '"]');
       if (!btn) continue;
-      const left = Number(plan.available) || 0;
+      const left = Math.min(Number(plan.available) || 0, 10);
       const out = left === 0;
       btn.disabled = out;
       btn.textContent = out ? 'Tạm hết' : 'Thuê ngay';

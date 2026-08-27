@@ -47,6 +47,8 @@ export const GAMES = {
         icon: '🦴',
         hours: 24,
         amount: 20000,
+        // Cheaper as a SECOND game on an account already rented — see addonAmount().
+        addonAmount: 15000,
         note: 'Trải nghiệm không rủi ro',
       },
       {
@@ -118,6 +120,7 @@ export const GAMES = {
         icon: '🧪',
         hours: 24,
         amount: 20000,
+        addonAmount: 15000,
         note: 'Trải nghiệm không rủi ro',
       },
       {
@@ -321,6 +324,26 @@ export function findPlan(gameId, planId) {
     game.plans.find((p) => p.id === planId) ||
     (game.purchase?.id === planId ? game.purchase : null);
   return plan ? { ...plan, gameId, gameName: game.name } : null;
+}
+
+/**
+ * What a plan costs as an ADDON — a second game opened on the account a customer is
+ * already renting — and what it costs on the shelf.
+ *
+ * An addon claims no stock: the login is one this customer already holds, so the
+ * only cost is the game itself. `addonAmount` on the plan is what that is worth;
+ * a plan without one is simply sold at its shelf price.
+ *
+ * Returns `full` as null when nothing was taken off, so a caller never has to
+ * compare two numbers to find out whether there is a discount to show. Charging is
+ * decided here and nowhere else — the page displays what this returns, it does not
+ * work it out, and it never sends an amount.
+ */
+export function addonAmount(plan) {
+  const full = plan?.amount ?? 0;
+  const price = plan?.addonAmount;
+  if (typeof price !== 'number' || price >= full) return { amount: full, full: null };
+  return { amount: price, full };
 }
 
 /** The buy-out offer for a game, or null if it is rent-only. */

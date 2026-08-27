@@ -702,65 +702,144 @@ async function listAllOrders(env, actor, query) {
   return { items, meta };
 }
 
-async function summary(env, actor) {
-  if (isOwner(actor)) {
-    return (
-      (await env.DB.prepare(
-        `SELECT
-           (SELECT COUNT(*) FROM steam_accounts) AS accounts,
-           (SELECT COUNT(*) FROM steam_accounts WHERE status = 'available') AS available,
-           (SELECT COUNT(*) FROM steam_accounts WHERE status = 'rented') AS rented,
-           (SELECT COUNT(*) FROM steam_accounts WHERE status = 'sold') AS sold,
-           (SELECT COUNT(*) FROM steam_accounts WHERE status = 'disabled') AS disabled,
-           (SELECT COUNT(*) FROM orders WHERE status = 'active') AS activeRentals,
-           (SELECT COUNT(*) FROM orders WHERE status = 'awaiting_stock') AS awaitingStock,
-           (SELECT COUNT(*) FROM orders WHERE status = 'active'
-              AND expires_at > strftime('%s','now')
-              AND expires_at <= strftime('%s','now') + 86400) AS expiringSoon,
-           (SELECT COUNT(*) FROM account_reports WHERE status = 'open') AS openReports,
-           (SELECT COALESCE(SUM(amount), 0) FROM orders
-             WHERE paid_at IS NOT NULL${revenueStatusSql()}) AS revenue,
-           -- Shown beside it: money that came in and went back out. Without this the
-           -- drop in revenue after a refund has no explanation on the page.
-           (SELECT COALESCE(SUM(amount), 0) FROM orders
-             WHERE paid_at IS NOT NULL AND status = 'refunded') AS refunded`
-      ).first()) ?? {}
-    );
-  }
+/**
+ * The stats tiles for ONE slice of the shop.
+ *
+ * `cond` is a predicate on steam_accounts (alias `a`). It goes into every subquery,
+ * which is why the binds are repeated with it — one copy per subquery, built here
+ * rather than counted by hand at the call site.
+ *
+ * Orders and reports are reached THROUGH their account, so an order that has no
+ * account yet (awaiting_stock, before anything was assigned) falls outside every
+ * slice by construction. That is the right answer for "how is this group doing" —
+ * unassigned demand belongs to no group — and it is why the shop-wide figures in
+ * summary() are counted without the join instead.
+ */
+async function sliceSummary(env, cond, binds) {
+  const stock = (extra = '') => `SELECT COUNT(*) FROM steam_accounts a WHERE ${cond}${extra}`;
+  const onOrders = (extra) =>
+    `SELECT COUNT(*) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
+      WHERE ${cond} AND ${extra}`;
+  const money = (extra) =>
+    `SELECT COALESCE(SUM(o.amount), 0) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
+      WHERE ${cond} AND o.paid_at IS NOT NULL${extra}`;
 
-  // Manager: everything counted through their own groups, including revenue —
-  // shop-wide takings are not theirs to see.
-  const ids = actor?.groupIds ?? [];
-  if (!ids.length) {
-    return { accounts: 0, available: 0, rented: 0, sold: 0, disabled: 0, activeRentals: 0,
-             awaitingStock: 0, expiringSoon: 0, openReports: 0, revenue: 0, refunded: 0 };
-  }
-  const list = ids.map(() => '?').join(', ');
-  const row = await env.DB.prepare(
-    `SELECT
-       (SELECT COUNT(*) FROM steam_accounts WHERE group_id IN (${list})) AS accounts,
-       (SELECT COUNT(*) FROM steam_accounts WHERE group_id IN (${list}) AND status = 'available') AS available,
-       (SELECT COUNT(*) FROM steam_accounts WHERE group_id IN (${list}) AND status = 'rented') AS rented,
-       (SELECT COUNT(*) FROM steam_accounts WHERE group_id IN (${list}) AND status = 'sold') AS sold,
-       (SELECT COUNT(*) FROM steam_accounts WHERE group_id IN (${list}) AND status = 'disabled') AS disabled,
-       (SELECT COUNT(*) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
-         WHERE a.group_id IN (${list}) AND o.status = 'active') AS activeRentals,
-       (SELECT COUNT(*) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
-         WHERE a.group_id IN (${list}) AND o.status = 'awaiting_stock') AS awaitingStock,
-       (SELECT COUNT(*) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
-         WHERE a.group_id IN (${list}) AND o.status = 'active'
+  const parts = [
+    ['accounts', stock()],
+    ['available', stock(" AND a.status = 'available'")],
+    ['rented', stock(" AND a.status = 'rented'")],
+    ['sold', stock(" AND a.status = 'sold'")],
+    ['disabled', stock(" AND a.status = 'disabled'")],
+    ['activeRentals', onOrders("o.status = 'active'")],
+    ['awaitingStock', onOrders("o.status = 'awaiting_stock'")],
+    [
+      'expiringSoon',
+      onOrders(
+        `o.status = 'active'
            AND o.expires_at > strftime('%s','now')
-           AND o.expires_at <= strftime('%s','now') + 86400) AS expiringSoon,
-       (SELECT COUNT(*) FROM account_reports r JOIN steam_accounts a ON a.id = r.account_id
-         WHERE a.group_id IN (${list}) AND r.status = 'open') AS openReports,
-       (SELECT COALESCE(SUM(o.amount), 0) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
-         WHERE a.group_id IN (${list}) AND o.paid_at IS NOT NULL${revenueStatusSql('o.')}) AS revenue,
-       (SELECT COALESCE(SUM(o.amount), 0) FROM orders o JOIN steam_accounts a ON a.id = o.account_id
-         WHERE a.group_id IN (${list}) AND o.paid_at IS NOT NULL AND o.status = 'refunded') AS refunded`
+           AND o.expires_at <= strftime('%s','now') + 86400`
+      ),
+    ],
+    [
+      'openReports',
+      `SELECT COUNT(*) FROM account_reports r JOIN steam_accounts a ON a.id = r.account_id
+        WHERE ${cond} AND r.status = 'open'`,
+    ],
+    ['revenue', money(revenueStatusSql('o.'))],
+    ['refunded', money(" AND o.status = 'refunded'")],
+  ];
+
+  // One copy of `binds` per subquery, because each embeds `cond` once — but counted
+  // from the SQL rather than assumed. A subquery that ever stops using `cond` (a
+  // shop-wide total dropped in among the slices) would otherwise shift every bind
+  // after it by one, and all D1 says then is "Wrong number of parameter bindings",
+  // naming neither the query nor the column. That is exactly how the previous
+  // hand-counted version was wrong: eleven placeholder groups, ten copies bound.
+  const bindsFor = (sql) => {
+    if (!binds.length) return [];
+    const need = (sql.match(/\?/g) ?? []).length;
+    const out = [];
+    while (out.length < need) out.push(...binds);
+    return out;
+  };
+
+  const row = await env.DB.prepare(
+    `SELECT ${parts.map(([name, sql]) => `(${sql}) AS ${name}`).join(', ')}`
   )
-    .bind(...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids, ...ids)
+    .bind(...parts.flatMap(([, sql]) => bindsFor(sql)))
     .first();
   return row ?? {};
+}
+
+/**
+ * The stats tiles.
+ *
+ * `query.group` narrows them to one account group, in the same vocabulary the
+ * accounts list uses: '' (or absent) is everything the actor may see, 'none' is
+ * stock filed under no group, anything else is a group id. The tiles sit above a
+ * table that can be filtered by group, and shop-wide numbers above a one-group
+ * table get read as that group's own.
+ *
+ * A group the actor may not see is not an error and not a peek: the scope
+ * condition is ANDed on, so the counts come back as zeros.
+ */
+async function summary(env, actor, query) {
+  const conds = [];
+  const binds = [];
+
+  const rawGroup = typeof query?.group === 'string' ? query.group : '';
+  if (rawGroup !== '') {
+    if (rawGroup === 'none') {
+      // Ungrouped stock is owner-only, and the scope condition below says so for a
+      // manager — this yields zeros for them rather than a forbidden.
+      conds.push('a.group_id IS NULL');
+    } else {
+      const gid = Number(rawGroup);
+      if (!Number.isFinite(gid)) return { error: 'bad_group' };
+      conds.push('a.group_id = ?');
+      binds.push(gid);
+    }
+  }
+
+  if (!isOwner(actor)) {
+    // Manager: everything counted through their own groups, including revenue —
+    // shop-wide takings are not theirs to see.
+    const ids = actor?.groupIds ?? [];
+    if (!ids.length) {
+      return { accounts: 0, available: 0, rented: 0, sold: 0, disabled: 0, activeRentals: 0,
+               awaitingStock: 0, expiringSoon: 0, openReports: 0, revenue: 0, refunded: 0 };
+    }
+    conds.push(`a.group_id IN (${ids.map(() => '?').join(', ')})`);
+    binds.push(...ids);
+  }
+
+  if (conds.length) return sliceSummary(env, conds.join(' AND '), binds);
+
+  // Owner, no group asked for: the whole shop. Counted WITHOUT the account join, so
+  // that orders carrying no account yet — awaiting_stock is exactly that — are still
+  // in the totals. A group slice cannot include them; the shop total must.
+  return (
+    (await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM steam_accounts) AS accounts,
+         (SELECT COUNT(*) FROM steam_accounts WHERE status = 'available') AS available,
+         (SELECT COUNT(*) FROM steam_accounts WHERE status = 'rented') AS rented,
+         (SELECT COUNT(*) FROM steam_accounts WHERE status = 'sold') AS sold,
+         (SELECT COUNT(*) FROM steam_accounts WHERE status = 'disabled') AS disabled,
+         (SELECT COUNT(*) FROM orders WHERE status = 'active') AS activeRentals,
+         (SELECT COUNT(*) FROM orders WHERE status = 'awaiting_stock') AS awaitingStock,
+         (SELECT COUNT(*) FROM orders WHERE status = 'active'
+            AND expires_at > strftime('%s','now')
+            AND expires_at <= strftime('%s','now') + 86400) AS expiringSoon,
+         (SELECT COUNT(*) FROM account_reports WHERE status = 'open') AS openReports,
+         (SELECT COALESCE(SUM(amount), 0) FROM orders
+           WHERE paid_at IS NOT NULL${revenueStatusSql()}) AS revenue,
+         -- Shown beside it: money that came in and went back out. Without this the
+         -- drop in revenue after a refund has no explanation on the page.
+         (SELECT COALESCE(SUM(amount), 0) FROM orders
+           WHERE paid_at IS NOT NULL AND status = 'refunded') AS refunded`
+    ).first()) ?? {}
+  );
 }
 
 /* ─── groups & managers (owner only) ──────────── */
@@ -913,7 +992,9 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
   if (!env.DB || !env.ACCOUNT_ENC_KEY) return bad('rentals_not_configured', 503);
 
   if (path === '/api/admin/summary' && method === 'GET') {
-    return { status: 200, body: await summary(env, actor) };
+    const stats = await summary(env, actor, query);
+    if (stats.error) return bad(stats.error, 400);
+    return { status: 200, body: stats };
   }
 
   // Fix an order by hand: change its status, and/or put a specific account on it.

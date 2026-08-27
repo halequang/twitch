@@ -68,7 +68,11 @@ Flow (all on help.steampowered.com): log in -> open the change-password wizard
 outlook token, or a manual prompt) and submit it -> set the new password twice on
 the reset page and submit. Status OK means the new password is live (and recorded).
 
-A password is never rotated twice within 24 hours (MIN_ROTATION_INTERVAL_HOURS).
+A password is never rotated twice within 24 hours (MIN_ROTATION_INTERVAL_HOURS),
+and only --force-interval waives that — NOT --force, which merely re-does accounts
+the result file already lists. Keeping them separate is the point: --force is the
+everyday flag (one OK row retires a login from the done-list for good), so a shared
+switch meant the interval was off practically always.
 A ROLLING window, not "the same calendar day": a calendar rule would allow 23:50 then
 00:10, twenty minutes apart, which is the double rotation this exists to prevent.
 Each rotation costs a Steam Guard email and invalidates whatever the previous run
@@ -97,20 +101,25 @@ ENCRYPTED password back to steam_accounts.password_enc. --remote hits production
 via _d1crypto.mjs (byte-identical to the worker's AES-GCM).
 
 Immediately before each password change the pool is re-read, and the account is
-skipped if it has been rented again while earlier accounts were being processed
-(see rental_restarted) — rotating then would lock out a paying customer.
+skipped unless its rental is genuinely over (see rental_restarted): an active order
+on it, or any status other than 'available', stops the rotation. This is checked for
+every account, including one named with --account, because rotating a live rental
+locks out the customer paying for it. --allow-rented is the deliberate override.
 
 On a successful change the account is also set back to status 'available', so the
 rotated login re-enters the rental pool. Enforced in SQL, three states survive a
 rotation untouched:
   - held by an ACTIVE rental -> reported as OK_STILL_RENTED, so a rotation can
-    never hand the same login to a second customer while the first still has it;
+    never hand the same login to a second customer while the first still has it.
+    Only reachable with --allow-rented now: without it the rental check above
+    refuses the account before Steam is touched at all;
   - 'sold' or 'disabled' -> reported as OK_KEPT_SOLD / OK_KEPT_DISABLED, since
     flipping those to 'available' would put an account that left the rental
     business back up for rent.
 
 --account <login>[,<login>...] forces a password change for those specific
-accounts (bypassing the rental-over selection and the already-done skip). In
+accounts (bypassing the already-done skip, and loading them whatever their status —
+but NOT the live-rental check, which still refuses an account someone is renting). In
 --db mode they're loaded from the DB by login regardless of status; in file mode
 the input is filtered to those logins. Repeatable and comma-separated.
 
@@ -139,6 +148,10 @@ instead of guessed at again.
 
 Usage:
     python steam_change_password.py [accounts.txt] [--force] [--keep-open]
+    #   --force           re-do accounts already listed in the result file
+    #   --force-interval  also rotate one changed in the last 24h (implies --force)
+    #   --allow-rented    also rotate one whose rental is still LIVE (locks the
+    #                     renter out — say so on purpose)
     python steam_change_password.py --db --remote --account <login> --mode email \
         --new-email new@outlook.com [--new-email-password <pw>]
     python steam_change_password.py --db [--remote] [--force] [--yes] [--keep-open]
@@ -152,6 +165,8 @@ Environment:
     CHROMEDRIVER=/path       the driver to use, skipping the download. On Debian the
                              chromium-driver package matches the chromium package,
                              which is the pairing that actually works on ARM.
+    STEAM_CHPW_TIMESTAMPS=0  drop the [HH:MM:SS] prefix from every printed line.
+                             On by default; the run's date is in the start banner.
     python steam_change_password.py --db --remote --account egrot16122,ywhods4353
 """
 import json
@@ -187,11 +202,61 @@ except Exception:
     Hotmail = None
     httpx = None
 
+
+# ======================
+# OUTPUT
+# ======================
+# Every line is stamped with the local time it was printed. A sweep runs for hours,
+# and most of that is waiting — on a Steam page, on a Chrome launch, on mail that
+# arrives when it arrives. An unstamped log says what happened but never when, which
+# is the one thing "the code never came" and "it hung somewhere" are questions about.
+# The date is printed once per run in the banner, so each line carries only HH:MM:SS.
+#
+# Done by shadowing print() rather than by moving to logging: the ~130 call sites keep
+# their leading-space layout (which is how the per-account lines are indented under the
+# `===== [n/N] user =====` header), and nothing has to be rewritten to gain a stamp.
+# Output is flushed per line so that `python ... | tee run.log` and `tail -f` show the
+# stamps as they happen instead of a block of them whenever the pipe buffer fills.
+# STEAM_CHPW_TIMESTAMPS=0 restores bare output.
+_print = print
+_TIMESTAMPS = os.environ.get("STEAM_CHPW_TIMESTAMPS", "1").strip().lower() not in (
+    "0", "false", "no")
+
+
+def _stamp():
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def print(*args, **kwargs):
+    """print(), with the time in front of every line it emits.
+
+    Blank lines are left blank: several messages open with "\n" to space the log,
+    and a lone timestamp there would be noise rather than information.
+    """
+    sep = kwargs.pop("sep", " ")
+    kwargs.setdefault("flush", True)
+    text = sep.join(str(a) for a in args)
+    if not _TIMESTAMPS:
+        _print(text, **kwargs)
+        return
+    prefix = f"[{_stamp()}] "
+    _print("\n".join(prefix + ln if ln.strip() else ln
+                     for ln in text.split("\n")), **kwargs)
+
+
 # ======================
 # CONFIG
 # ======================
 INPUT_FILE = "steam_accounts.txt"
 STEAM_LOGIN_URL = "https://store.steampowered.com/login/"
+# The same Steam sign-in, served by the help site — which is where every other step
+# of this flow already runs. It is a fallback rather than the default because the
+# store page is the one this login code was written against, but it matters: the two
+# are separate hosts and are blocked independently. A network that resets
+# store.steampowered.com (an ISP dropping it by SNI is the usual cause) will still
+# serve help.steampowered.com, and the run only ever needed the store for this one
+# page. Without it a reachable account was reported as "login error".
+STEAM_LOGIN_URLS = [STEAM_LOGIN_URL, "https://help.steampowered.com/en/login/"]
 STEAM_ACCOUNT_URL = "https://store.steampowered.com/account/"
 # Steam routes password changes through the help wizard.
 STEAM_CHANGE_PASSWORD_URL = (
@@ -315,11 +380,31 @@ def load_accounts(path):
     return accounts
 
 
+def _find_tokens_file(file_path):
+    """Where the tokens file actually is, or "".
+
+    REFRESH_TOKENS_FILE is a bare name, so it used to resolve against the current
+    directory alone: a file sitting in scripts/ was invisible to the usual run from
+    the repo root, and the only symptom was every outlook mailbox falling back to
+    the manual prompt. Same fix as .dev.vars — look beside the script and in the
+    repo as well as in the directory the run happens to start from.
+    """
+    if os.path.isabs(file_path):
+        return file_path if os.path.exists(file_path) else ""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for folder in (os.getcwd(), here, TWITCH_DIR, os.path.join(TWITCH_DIR, "scripts")):
+        candidate = os.path.join(folder, file_path)
+        if os.path.exists(candidate):
+            return candidate
+    return ""
+
+
 def load_refresh_tokens(file_path=REFRESH_TOKENS_FILE):
     """Load outlook tokens keyed by lowercased email from a
     'email|email_pass|refresh_token|client_id' file. Returns {email: (rt, ci)}."""
     tokens = {}
-    if not os.path.exists(file_path):
+    file_path = _find_tokens_file(file_path)
+    if not file_path:
         return tokens
     with open(file_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -363,7 +448,7 @@ def _is_graph_mailbox(email):
 
 def _can_use_mail_api(acc):
     """Whether it is worth calling /api/read-code for this account at all."""
-    if _mail_auth_is_broken():
+    if _mail_auth_is_broken() or _mail_is_unknown(acc.get("email")):
         return False
     return bool(_load_mail_api_key()) and _is_graph_mailbox(acc.get("email"))
 
@@ -410,6 +495,33 @@ def _note_mail_auth_failure(detail):
     print(f"     Until it is fixed, codes have to be typed in by hand.")
 
 
+# A 404 from the endpoint means that mailbox is not one the worker can open: it has
+# no saved credentials for the address and the account carries no refreshToken. Like
+# the 401 above this is a standing fact, not a timing problem — but it is per MAILBOX
+# rather than per run, since the next account's mailbox may well be saved. Without
+# this, poll_new_code asked the same question every 3 seconds for the full two
+# minutes, printed the same 404 forty times, and only then fell through to the manual
+# prompt. Now the first 404 ends the wait and says what would fix it.
+_MAIL_UNKNOWN = set()
+
+
+def _mail_is_unknown(email):
+    return (email or "").strip().lower() in _MAIL_UNKNOWN
+
+
+def _note_mail_unknown(email, detail):
+    addr = (email or "").strip().lower()
+    if addr in _MAIL_UNKNOWN:
+        return
+    _MAIL_UNKNOWN.add(addr)
+    print(f"  x  the mail API does not have {email} ({detail}).")
+    print(f"     Not retrying it: no amount of waiting saves a mailbox the worker")
+    print(f"     cannot open. Give it one of these and it reads automatically —")
+    print(f"       1. save the mailbox on the mail worker (its /mail admin UI), or")
+    print(f"       2. put refresh_token|client_id for it in {REFRESH_TOKENS_FILE}")
+    print(f"          (line: email|email_password|refresh_token|client_id).")
+
+
 def _read_code_api(acc):
     """One call to the fungamingtool /api/read-code endpoint.
 
@@ -439,6 +551,8 @@ def _read_code_api(acc):
         text = str(e)
         if "401" in text or "403" in text or "unauthor" in text.lower():
             _note_mail_auth_failure(text)
+        elif "404" in text or "not found" in text.lower():
+            _note_mail_unknown(acc.get("email"), text)
         else:
             print(f"  [{acc.get('steam_user')}] read-code API: {e}")
         return ""
@@ -720,6 +834,9 @@ def _read_code(acc, want="credential_change"):
 def _no_mailbox_reason(acc):
     """Why this account's code cannot be read automatically, for the log."""
     email = acc.get("email") or "(no address)"
+    if _mail_is_unknown(email):
+        return (f"the mail API has no credentials for {email} — save that mailbox on "
+                f"the mail worker, or give it refresh_token|client_id")
     if _webmail_url(email) and not acc.get("email_pass"):
         return f"{email} has no mailbox password on record — cannot read its webmail"
     if not _webmail_url(email) and not _is_graph_mailbox(email):
@@ -742,8 +859,9 @@ def poll_new_code(acc, before_code, max_wait=GUARD_CODE_WAIT_SEC,
             code = _read_code_api(acc)
             if code and code != before_code:
                 return code
-            # A refused key will still be refused in three seconds.
-            if _mail_auth_is_broken():
+            # A refused key will still be refused in three seconds, and a mailbox
+            # the worker does not have will still be missing.
+            if _mail_auth_is_broken() or _mail_is_unknown(acc.get("email")):
                 return ""
             time.sleep(poll_interval)
         return ""
@@ -947,9 +1065,9 @@ def load_accounts_from_db(remote, key, force=False):
     decrypted for login. Returns account dicts with db_id + last_expired.
 
     Accounts rotated within the last MIN_ROTATION_INTERVAL_HOURS are left out unless
-    `force`: each rotation costs a Steam Guard email and invalidates the password the
-    previous run recorded, so doing it twice inside a day is waste at best and a
-    lockout at worst."""
+    `force` (which here means --force-interval, not --force): each rotation costs a
+    Steam Guard email and invalidates the password the previous run recorded, so
+    doing it twice inside a day is waste at best and a lockout at worst."""
     sql = ("SELECT sa.id AS id, sa.login AS login, sa.password_enc AS password_enc, "
            "sa.email AS email, sa.email_password_enc AS email_password_enc, "
            "sa.password_changed_at AS password_changed_at, "
@@ -1135,13 +1253,13 @@ def rental_restarted(db_id, remote):
            f"FROM steam_accounts sa WHERE sa.id = {int(db_id)}")
     rows = _d1(sql, remote)
     if not rows:
-        return "deleted"
+        return "the account row is gone from the database"
     row = rows[0]
     if int(row.get("active_orders") or 0) > 0:
-        return "re-rented (active order)"
+        return "it is rented right now (active order) — that renter is using this password"
     status = (row.get("status") or "").strip()
     if status != "available":
-        return f"status is now '{status}'"
+        return f"its status is '{status}', not 'available' — it is not in the rental pool"
     return None
 
 
@@ -1573,6 +1691,65 @@ def _fill_and_submit_login(driver, wait, acc, label):
     return False
 
 
+# Chrome reports an unreachable host by raising with a net:: code in the message.
+# Worth telling apart from "the page loaded and said something unexpected": nothing
+# about the account, its password or Steam is at fault, and the remedy is a different
+# host or a different network, not a retry with the same credentials.
+_NET_ERRORS = (
+    "net::err_connection_reset", "net::err_connection_closed", "net::err_connection_refused",
+    "net::err_connection_timed_out", "net::err_empty_response", "net::err_name_not_resolved",
+    "net::err_timed_out", "net::err_ssl_protocol_error", "net::err_address_unreachable",
+    "net::err_internet_disconnected", "net::err_socket_not_connected",
+)
+
+
+def _net_error(err):
+    """The net:: code inside a Selenium error, or "" if it is not a connectivity one."""
+    text = str(err).lower()
+    return next((code for code in _NET_ERRORS if code in text), "")
+
+
+def _host(url):
+    return url.split("//", 1)[-1].split("/", 1)[0]
+
+
+def open_url(driver, urls, label, attempts=2, pause=3.0):
+    """Load the first of `urls` that answers. Returns the one that loaded, or "".
+
+    A connection reset is retried once — resets are often transient — and only then
+    is the next host tried. A non-network error is raised, because "the page loaded
+    and was not what we expected" is a different problem and must not be silently
+    turned into a host switch.
+    """
+    if isinstance(urls, str):
+        urls = [urls]
+    for index, url in enumerate(urls):
+        for attempt in range(1, attempts + 1):
+            try:
+                driver.get(url)
+            except Exception as err:
+                code = _net_error(err)
+                if not code:
+                    raise
+                more = attempt < attempts or index + 1 < len(urls)
+                print(f"  [{label}] {_host(url)} unreachable ({code})"
+                      f"{' — retrying' if attempt < attempts else ''}"
+                      f"{'' if more else ' — no host left to try'}.")
+                if attempt < attempts:
+                    time.sleep(pause)
+                continue
+            # Chrome does not always raise: a blocked host can also come back as its
+            # own error page, which has no Steam markup and would fail later with a
+            # confusing "could not find login form".
+            if driver.find_elements(By.ID, "main-frame-error"):
+                print(f"  [{label}] {_host(url)} returned a browser error page.")
+                break
+            if index:
+                print(f"  [{label}] using {_host(url)} instead.")
+            return url
+    return ""
+
+
 def steam_login(driver, acc):
     """Log into Steam using acc['steam_user'] + acc['steam_pass']. Handles the
     email Steam Guard prompt automatically if acc has refresh_token/client_id.
@@ -1580,7 +1757,9 @@ def steam_login(driver, acc):
     username, password = acc["steam_user"], acc["steam_pass"]
     label = username
     try:
-        driver.get(STEAM_LOGIN_URL)
+        if not open_url(driver, STEAM_LOGIN_URLS, label):
+            print(f"  [{label}] cannot reach Steam's sign-in page from this machine.")
+            return False
         wait = WebDriverWait(driver, 25)
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         if _is_logged_in(driver):
@@ -1670,7 +1849,8 @@ def change_password(driver, acc, old_pass, new_pass):
     label = acc["steam_user"]
     try:
         print(f"  [{label}] opening change-password: {STEAM_CHANGE_PASSWORD_URL}")
-        driver.get(STEAM_CHANGE_PASSWORD_URL)
+        if not open_url(driver, STEAM_CHANGE_PASSWORD_URL, label):
+            return "NO_WIZARD"
         # The wizard redirects to HelpWithLoginInfoSendCode with the "email me a
         # code" button. Wait for that button.
         try:
@@ -1971,7 +2151,8 @@ def change_email(driver, acc, new_email, new_mail_acc):
     label = acc["steam_user"]
     try:
         print(f"  [{label}] opening change-email: {STEAM_CHANGE_EMAIL_URL}")
-        driver.get(STEAM_CHANGE_EMAIL_URL)
+        if not open_url(driver, STEAM_CHANGE_EMAIL_URL, label):
+            return "NO_WIZARD"
 
         failed = _wizard_identity_code(driver, acc, label)
         if failed:
@@ -2079,7 +2260,26 @@ def update_db_email(db_id, new_email, new_mail_password, remote, key):
 
 def main():
     args = sys.argv[1:]
-    force = "--force" in args
+    # --force means "re-do accounts the result file already lists". It does NOT
+    # waive the 24-hour interval: that was one flag doing two unrelated jobs, and
+    # the everyday job (the result file retires a login for good after one OK row,
+    # so a re-rented account is never rotated again without --force) meant --force
+    # was on every invocation — which silently switched off the safety it was
+    # sharing a flag with. An account rotated at 20:35 was rotated again at 21:49.
+    #
+    # Waiving the interval is now its own deliberate flag. It implies --force,
+    # because an account rotated an hour ago is by definition in the result file,
+    # and being stopped by the done-list while asking to override the interval
+    # would just be confusing.
+    force_interval = "--force-interval" in args
+    force = force_interval or "--force" in args
+    # Rotate a login whose rental is still LIVE. Its own flag, and off by default:
+    # a rotation mid-rental locks a paying customer out of what they are holding, so
+    # it must be asked for in as many words. --force and --account are not that ask —
+    # they are the everyday "do this one again" flags, and --account used to waive
+    # this check silently, which is precisely how a live renter's password got
+    # replaced under them (the OK_STILL_RENTED rows).
+    allow_rented = "--allow-rented" in args
     assume_yes = "--yes" in args
     keep_open = "--keep-open" in args
     use_db = "--db" in args
@@ -2124,7 +2324,7 @@ def main():
             else:
                 print(f"[db] source: twitch D1 '{D1_DB_NAME}' ({where}) — rotating "
                       f"passwords for accounts whose rental is over.")
-                accounts = load_accounts_from_db(remote, enc_key, force=force)
+                accounts = load_accounts_from_db(remote, enc_key, force=force_interval)
         except Exception as e:
             print(f"[db] failed to load accounts from D1: {e}")
             sys.exit(1)
@@ -2168,6 +2368,8 @@ def main():
 
     done = set() if (force or account_logins) else load_done(result_file)
     todo = [a for a in accounts if a["steam_user"] not in done]
+    print(f"===== run started {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+          f"(mode={mode}, source={'D1 ' + ('remote' if remote else 'local') if use_db else input_file}) =====")
     print(f"Loaded {len(accounts)} account(s); {len(todo)} to process "
           f"({len(accounts) - len(todo)} already done)"
           f"{' [FORCE]' if force else ''}{' [ACCOUNT]' if account_logins else ''}.")
@@ -2179,7 +2381,8 @@ def main():
     # don't carry them inline, so the email code can be read automatically.
     refresh_tokens = load_refresh_tokens()
     if refresh_tokens:
-        print(f"Loaded {len(refresh_tokens)} token(s) from {REFRESH_TOKENS_FILE}.")
+        print(f"Loaded {len(refresh_tokens)} token(s) from "
+              f"{_find_tokens_file(REFRESH_TOKENS_FILE)}.")
     for a in todo:
         if not a.get("refresh_token") and a.get("email"):
             tok = refresh_tokens.get(a["email"].lower())
@@ -2220,15 +2423,24 @@ def main():
         # query because a run takes minutes per account, and re-read from the database
         # rather than trusted from memory for exactly that reason.
         #
-        # --force is the deliberate override; --account alone is NOT, because "rotate
-        # this specific login" is usually a retry of something that just happened.
-        if not force and acc.get("db_id") is not None and use_db:
+        # --force-interval is the deliberate override. Neither --force nor --account
+        # is: both are everyday flags for "do this one again", and a retry of
+        # something that just happened is precisely what must not re-rotate. A
+        # failed attempt writes no timestamp, so an ordinary retry is unaffected.
+        #
+        # Only in password mode. `--mode email` moves the contact ADDRESS and leaves
+        # the password alone, so a rotation earlier today is no reason to refuse it —
+        # and refusing would be worse than a no-op, since the run would record a
+        # SKIPPED_TOO_RECENT row for an email change nobody had asked to rate-limit.
+        if mode != "password":
+            pass
+        elif not force_interval and acc.get("db_id") is not None and use_db:
             try:
                 left = rotated_recently_in_db(acc["db_id"], remote)
                 if left:
                     print(f"  ⏭️  [{user}] SKIPPED — password changed less than "
                           f"{MIN_ROTATION_INTERVAL_HOURS}h ago; rotatable again in "
-                          f"{format_wait(left)} (pass --force to override).")
+                          f"{format_wait(left)} (pass --force-interval to override).")
                     record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_TOO_RECENT")
                     continue
             except Exception as e:
@@ -2237,26 +2449,30 @@ def main():
                 print(f"  ⏭️  [{user}] SKIPPED — rotation-interval re-check failed ({e}).")
                 record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_TOO_RECENT")
                 continue
-        elif not force and not use_db:
+        elif not force_interval and not use_db:
             left = rotated_recently_in_file(result_file, user)
             if left:
                 print(f"  ⏭️  [{user}] SKIPPED — password changed less than "
                       f"{MIN_ROTATION_INTERVAL_HOURS}h ago; rotatable again in "
-                      f"{format_wait(left)} (pass --force to override).")
+                      f"{format_wait(left)} (pass --force-interval to override).")
                 record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_TOO_RECENT")
                 continue
 
-        # Re-check the pool before touching Steam. --account is an explicit force,
-        # so it is exempt; the rental-over sweep is not.
-        if use_db and not account_logins and acc.get("db_id") is not None:
+        # Re-check the pool before touching Steam — for EVERY account, --account
+        # included. The rule is "rotate only after the rental is over", and an
+        # account named on the command line is no more free than one the sweep
+        # picked: --account skips the SELECTION (it loads a login whatever its
+        # status), which is not the same as permission to take a live rental away
+        # from the person paying for it. Waiving this needs --allow-rented.
+        if use_db and acc.get("db_id") is not None and not allow_rented:
             try:
                 blocked = rental_restarted(acc["db_id"], remote)
             except Exception as e:
                 # Cannot prove the account is free, so do not gamble a live rental.
                 blocked = f"re-check failed ({e})"
             if blocked:
-                print(f"  ⏭️  [{user}] SKIPPED — {blocked} since it was loaded; "
-                      f"leaving the password as the renter has it.")
+                print(f"  ⏭️  [{user}] SKIPPED — {blocked}. The password stays as it "
+                      f"is (pass --allow-rented to rotate anyway).")
                 record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_RERENTED")
                 continue
 

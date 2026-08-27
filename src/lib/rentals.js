@@ -20,6 +20,7 @@ import {
   TAG_SEPARATORS,
   accountMeetsPlanTags,
   findPlan,
+  addonAmount,
   gameOfPlan,
   purchasePlan,
   saleAllowed,
@@ -726,8 +727,15 @@ export async function createCheckout(
   }
 
   // What this payment actually charges. Every plan is billed at its shelf price
-  // except an upgrade, which is billed the gap between two of them.
-  const unitAmount = upgrade ? upgrade.quote.amount : plan.amount;
+  // except an upgrade, which is billed the gap between two of them, and an addon —
+  // a second game on a login the customer already rents — which has its own price.
+  // Derived here from the plan, never taken from the request: the page sends a plan
+  // id and nothing else, so a discount cannot be asked for.
+  const unitAmount = upgrade
+    ? upgrade.quote.amount
+    : addon
+      ? addonAmount(plan).amount
+      : plan.amount;
 
   // order_code is the primary key. Two checkouts in the same second collide, so
   // walk forward until one sticks.
@@ -1347,14 +1355,22 @@ async function addonOffers(db, order, internalNote) {
       // no upgrade route to offer instead, so there is nothing useful to show.
       plans: catalogue.plans
         .filter((p) => accountMeetsPlanTags(internalNote, p.id))
-        .map((p) => ({
-          id: p.id,
-          label: p.label,
-          icon: p.icon ?? null,
-          amount: p.amount,
-          hours: p.hours,
-          perks: p.perks ?? null,
-        })),
+        .map((p) => {
+          // `amount` is what this plan costs HERE, discount already applied, because
+          // that is the number the page shows on the button and the number the
+          // checkout will charge. `fullAmount` is the shelf price, sent only when it
+          // differs — it is what gets struck through, and null means "no offer on".
+          const price = addonAmount(p);
+          return {
+            id: p.id,
+            label: p.label,
+            icon: p.icon ?? null,
+            amount: price.amount,
+            fullAmount: price.full,
+            hours: p.hours,
+            perks: p.perks ?? null,
+          };
+        }),
     });
   }
   // A game whose every plan the login cannot serve is not an offer.

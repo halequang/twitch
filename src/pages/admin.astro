@@ -26,6 +26,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
     <p id="adminNotice" class="notice" hidden></p>
 
+    <p class="stats-scope" id="statsScope" hidden></p>
     <div class="stats" id="stats"></div>
 
     <!-- The daily number, straight after the tiles: this is what the panel gets
@@ -84,26 +85,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       </div>
     </section>
 
-    <!-- What customers asked for that the shop does not carry. Below the report
-         card because nobody is stuck — it is a buying decision, not an incident —
-         but above the inventory, since it is what the inventory should grow into. -->
-    <section id="gameReqWrap" class="card reports" hidden>
-      <div class="soon-head">
-        <h2 class="head" style="margin:0">🎮 Khách muốn thuê game mới</h2>
-        <span class="soon-window" id="gameReqCount"></span>
-      </div>
-      <div class="table-wrap">
-        <table class="tbl">
-          <thead>
-            <tr>
-              <th>Game</th><th class="right">Số khách</th><th>Ghi chú mới nhất</th>
-              <th>Trạng thái</th><th>Trả lời khách</th><th></th>
-            </tr>
-          </thead>
-          <tbody id="gameReqBody"></tbody>
-        </table>
-      </div>
-    </section>
+
 
     <section id="expiringWrap" class="card soon" hidden>
       <div class="soon-head">
@@ -247,6 +229,27 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       </div>
     </nav>
 
+    <!-- What customers asked for that the shop does not carry. Below the report
+     card because nobody is stuck — it is a buying decision, not an incident —
+     but above the inventory, since it is what the inventory should grow into. -->
+    <section id="gameReqWrap" class="card reports" hidden>
+      <div class="soon-head">
+        <h2 class="head" style="margin:0">🎮 Khách muốn thuê game mới</h2>
+        <span class="soon-window" id="gameReqCount"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead>
+          <tr>
+            <th>Game</th><th class="right">Số khách</th><th>Ghi chú mới nhất</th>
+            <th>Trạng thái</th><th>Trả lời khách</th><th></th>
+          </tr>
+          </thead>
+          <tbody id="gameReqBody"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="ownerOnly" hidden>
       <h2 class="head">Nhóm tài khoản</h2>
       <form id="groupForm" class="card form">
@@ -284,6 +287,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
         </table>
       </div>
     </section>
+
 
   </section>
 </Layout>
@@ -377,6 +381,12 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
   }
 
   .notice.error { border-color: #f0c2bf; background: var(--ad-red-soft); color: var(--ad-red); }
+
+  .stats-scope {
+    margin: 0 0 8px;
+    font-size: 13px;
+    color: var(--ad-text-mute);
+  }
 
   .stats {
     display: grid;
@@ -1048,7 +1058,16 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     return span;
   }
 
-  function renderStats(s) {
+  function renderStats(s, scopeLabel) {
+    // The tiles are the first thing on the page and the group filter that narrows
+    // them is most of a screen below, so a slice has to name itself — otherwise one
+    // group's numbers read as the whole shop's.
+    const scope = el('statsScope');
+    if (scope) {
+      scope.textContent = scopeLabel ? `Chỉ tính nhóm: ${scopeLabel}` : '';
+      scope.hidden = !scopeLabel;
+    }
+
     const items = [
       [s.accounts, 'Tài khoản'],
       [s.available, 'Còn trống'],
@@ -1704,6 +1723,10 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       // '' means no filter; the attribute drives the highlight.
       if (select) select.dataset.any = value === '' ? '1' : '0';
       LOADERS[name]().catch((err) => notice('Không tải được danh sách: ' + err.message, true));
+      // The tiles count the same slice, so the group filter moves them too. Status
+      // and search do not: they narrow which rows are listed, not which stock the
+      // shop has, and the tiles already break stock down by status themselves.
+      if (name === 'accounts' && key === 'group') loadSummary();
     };
     for (const [id, key] of pairs) {
       const select = el(id);
@@ -2226,9 +2249,24 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
 
   /* ─── boot ───────────────────────────────────── */
 
+  /** How the current account-group filter reads in the tiles' caption. */
+  function statsScopeLabel(group) {
+    if (!group) return '';
+    if (group === 'none') return '— chưa phân nhóm —';
+    const found = GROUPS.find((g) => String(g.id) === String(group));
+    // A group that has since been deleted still deserves an honest caption.
+    return found ? found.name : `nhóm #${group}`;
+  }
+
   async function loadSummary() {
+    // Same filter the accounts table uses, so the tiles and the list below them
+    // always describe the same stock. '' is the whole shop.
+    const group = views.accounts.group || '';
     try {
-      renderStats(await api('summary'));
+      renderStats(
+        await api('summary' + (group ? '?group=' + encodeURIComponent(group) : '')),
+        statsScopeLabel(group)
+      );
     } catch {
       /* stats are decorative; the tables carry the real state */
     }
