@@ -68,6 +68,13 @@ Flow (all on help.steampowered.com): log in -> open the change-password wizard
 outlook token, or a manual prompt) and submit it -> set the new password twice on
 the reset page and submit. Status OK means the new password is live (and recorded).
 
+A password is rotated only when a customer has actually held it: an account that
+was rotated yesterday and has sat in the pool since has been handed to nobody, so
+there is nothing to rotate. "Held" means a paid order newer than the rotation
+(NOT_HELD_SINCE_SQL / held_since_rotation) — fulfilment is when the credentials
+reach the customer, and reading it that way also covers a rental that ended in a
+refund. --force overrides it.
+
 A password is never rotated twice within 24 hours (MIN_ROTATION_INTERVAL_HOURS),
 and only --force-interval waives that — NOT --force, which merely re-does accounts
 the result file already lists. Keeping them separate is the point: --force is the
@@ -148,7 +155,8 @@ instead of guessed at again.
 
 Usage:
     python steam_change_password.py [accounts.txt] [--force] [--keep-open]
-    #   --force           re-do accounts already listed in the result file
+    #   --force           re-do accounts already listed in the result file, and
+    #                     ones no customer has held since their last rotation
     #   --force-interval  also rotate one changed in the last 24h (implies --force)
     #   --allow-rented    also rotate one whose rental is still LIVE (locks the
     #                     renter out — say so on purpose)
@@ -953,6 +961,23 @@ TOO_RECENT_SQL = (
     f" OR sa.password_changed_at <= strftime('%s', 'now') - {MIN_ROTATION_INTERVAL_SEC})"
 )
 
+# A rotation is only worth doing if somebody has actually been given the password
+# since it was last set. An account that was rotated yesterday and has sat in the
+# pool ever since has been handed to nobody: its password is as private as it was
+# the moment it was written, and changing it again buys nothing while costing a
+# Steam Guard email, a browser session and a fresh chance for the DB write to fail.
+#
+# "Has been given" is `paid_at`, not `expires_at`: fulfilment is when the customer
+# receives the credentials, so any paid order newer than the rotation means someone
+# holds that password. Reading it that way also catches a rental that ended in a
+# refund or a cancellation, where expires_at says nothing useful — the customer had
+# the login all the same.
+NOT_HELD_SINCE_SQL = (
+    " AND (sa.password_changed_at IS NULL"
+    " OR EXISTS (SELECT 1 FROM orders x WHERE x.account_id = sa.id"
+    "            AND x.paid_at IS NOT NULL AND x.paid_at > sa.password_changed_at))"
+)
+
 
 def hours_until_rotatable(epoch):
     """Hours left before this account may be rotated again, or 0 if it may now."""
@@ -1060,21 +1085,24 @@ def _decrypt_mail_pass(row, key):
         return ""
 
 
-def load_accounts_from_db(remote, key, force=False):
+def load_accounts_from_db(remote, key, force=False, force_all=False):
     """Accounts whose rental is OVER — status 'available' with an expired order —
     decrypted for login. Returns account dicts with db_id + last_expired.
 
-    Accounts rotated within the last MIN_ROTATION_INTERVAL_HOURS are left out unless
-    `force` (which here means --force-interval, not --force): each rotation costs a
-    Steam Guard email and invalidates the password the previous run recorded, so
-    doing it twice inside a day is waste at best and a lockout at worst."""
+    Two kinds of account are left out. One rotated within the last
+    MIN_ROTATION_INTERVAL_HOURS (unless --force-interval): each rotation costs a Steam
+    Guard email and invalidates the password the previous run recorded, so doing it
+    twice inside a day is waste at best and a lockout at worst. And one nobody has
+    been given since its last rotation (unless --force): see NOT_HELD_SINCE_SQL —
+    a password no customer has ever seen does not need replacing."""
     sql = ("SELECT sa.id AS id, sa.login AS login, sa.password_enc AS password_enc, "
            "sa.email AS email, sa.email_password_enc AS email_password_enc, "
            "sa.password_changed_at AS password_changed_at, "
            "MAX(o.expires_at) AS last_expired "
            "FROM steam_accounts sa "
            "JOIN orders o ON o.account_id = sa.id AND o.status = 'expired' "
-           f"WHERE sa.status = 'available'{'' if force else TOO_RECENT_SQL} "
+           f"WHERE sa.status = 'available'{'' if force else TOO_RECENT_SQL}"
+           f"{'' if force_all else NOT_HELD_SINCE_SQL} "
            "GROUP BY sa.id")
     accounts = []
     for r in _d1(sql, remote):
@@ -1232,6 +1260,37 @@ def _cli_values(argv, name):
             out += [x.strip() for x in a.split("=", 1)[1].split(",") if x.strip()]
         i += 1
     return out
+
+
+def held_since_rotation(db_id, remote):
+    """Why this account does not need rotating, or None if it does.
+
+    The mirror of rental_restarted: that one asks "is it free yet", this one asks
+    "has it been used since". Both are re-read here rather than trusted from the
+    selection, because a run takes minutes per account and the other copy of this
+    script may have rotated one in the meantime.
+
+    An account that has not been rented since its last rotation is holding a
+    password no customer has ever received. Rotating it again is pure cost — an
+    email, a browser, and another chance for the DB write to fail — so it is skipped
+    rather than done "just in case".
+    """
+    sql = ("SELECT sa.password_changed_at AS changed, "
+           "(SELECT MAX(o.paid_at) FROM orders o "
+           "  WHERE o.account_id = sa.id AND o.paid_at IS NOT NULL) AS last_paid "
+           f"FROM steam_accounts sa WHERE sa.id = {int(db_id)}")
+    rows = _d1(sql, remote)
+    if not rows:
+        return None                      # gone; rental_restarted reports that
+    changed = rows[0].get("changed")
+    if not changed:
+        return None                      # never rotated — always worth doing
+    last_paid = rows[0].get("last_paid")
+    if last_paid and int(last_paid) > int(changed):
+        return None
+    when = datetime.fromtimestamp(int(changed)).strftime("%Y-%m-%d %H:%M")
+    return (f"password last changed {when} and nobody has been given it since "
+            f"(no paid rental after that)")
 
 
 def rental_restarted(db_id, remote):
@@ -2324,7 +2383,8 @@ def main():
             else:
                 print(f"[db] source: twitch D1 '{D1_DB_NAME}' ({where}) — rotating "
                       f"passwords for accounts whose rental is over.")
-                accounts = load_accounts_from_db(remote, enc_key, force=force_interval)
+                accounts = load_accounts_from_db(
+                    remote, enc_key, force=force_interval, force_all=force)
         except Exception as e:
             print(f"[db] failed to load accounts from D1: {e}")
             sys.exit(1)
@@ -2456,6 +2516,25 @@ def main():
                       f"{MIN_ROTATION_INTERVAL_HOURS}h ago; rotatable again in "
                       f"{format_wait(left)} (pass --force-interval to override).")
                 record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_TOO_RECENT")
+                continue
+
+        # Nothing has happened to this account since it was last rotated, so the
+        # password it holds has never left the shop. --force is the override, and
+        # the right one: "re-do it even though the records say it is done" is exactly
+        # what this is. --account alone is not, since naming a login is usually a
+        # retry, and a retry of a rotation that already succeeded is this same waste.
+        if mode == "password" and use_db and acc.get("db_id") is not None and not force:
+            try:
+                idle = held_since_rotation(acc["db_id"], remote)
+            except Exception as e:
+                # Unlike the live-rental check, being unsure here is harmless: the
+                # worst case is one rotation that was not strictly needed.
+                idle = None
+                print(f"  [{user}] rental-since-rotation check failed ({e}); rotating anyway.")
+            if idle:
+                print(f"  ⏭️  [{user}] SKIPPED — {idle}. Nothing to rotate "
+                      f"(pass --force to rotate anyway).")
+                record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_NOT_RENTED")
                 continue
 
         # Re-check the pool before touching Steam — for EVERY account, --account
