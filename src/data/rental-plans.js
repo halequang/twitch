@@ -39,41 +39,73 @@ export const GAMES = {
       'Không giới hạn giờ chơi',
       'Bảo hành trong suốt gói thuê',
     ],
+    // The page shows one card per DURATION, and the plans inside it as the choice
+    // between account kinds. Grouping lives here rather than in the template because
+    // it is a pricing decision — which plans are alternatives to each other — and
+    // the template should only lay out what the catalogue already says.
+    //
+    // `plans` stays a flat list of real, separately-buyable plans: ids are what
+    // orders record, stock is counted per plan, and checkout knows nothing about
+    // cards. A group is presentation over that list, not a thing you can buy.
+    groups: [
+      { id: 'day', kicker: 'Gói thử nghiệm', label: '1 ngày', icon: '🦴' },
+      {
+        id: 'week',
+        kicker: 'Gói khuyến nghị',
+        label: '1 tuần',
+        icon: '🦖',
+        badge: '🔥 Tiết kiệm',
+        featured: true,
+      },
+    ],
     plans: [
       {
         id: 'isle-1d',
-        kicker: 'Gói thử nghiệm',
+        group: 'day',
+        // The name of this option INSIDE its card. `label` stays the plan's own
+        // full name, because that is what an order description, an addon button and
+        // an upgrade button all print, none of which have a card around them.
+        variant: 'Thường',
         label: '1 ngày',
         icon: '🦴',
         hours: 24,
-        amount: 20000,
-        // Cheaper as a SECOND game on an account already rented — see addonAmount().
-        addonAmount: 15000,
-        note: 'Trải nghiệm không rủi ro',
+        amount: 15000,
+        note: 'Acc chuẩn, chơi mọi server',
+      },
+      {
+        // Same day, on stock vetted as never banned (the no_ban tag). Dearer because
+        // that stock is scarce and is what a customer burned by a ban comes back for.
+        id: 'isle-1d-noban',
+        group: 'day',
+        variant: 'VOIP + MAP',
+        label: '1 ngày no-ban',
+        icon: '🛡️',
+        hours: 24,
+        amount: 25000,
+        note: 'Nói chuyện & xem map trong game',
       },
       {
         id: 'isle-7d',
-        kicker: 'Gói khuyến nghị',
+        group: 'week',
+        variant: 'Thường',
         label: '1 tuần',
         icon: '🦖',
         hours: 24 * 7,
         amount: 50000,
         note: 'Chỉ ~7k / ngày — rẻ hơn 65%',
-        badge: '🔥 Tiết kiệm',
-        featured: true,
       },
       {
         // Same week, with the in-game extras. `perks` is what the card renders as
         // the "đặc quyền" box — without it this would be a second week plan at a
         // higher price and no visible reason for it.
         id: 'isle-7d-voip',
-        kicker: 'Gói đầy đủ',
+        group: 'week',
+        variant: 'VOIP + MAP',
         label: '1 tuần',
         icon: '🎙️',
         hours: 24 * 7,
         amount: 80000,
         note: 'Nói chuyện & xem map trong game',
-        badge: '🔥 Full perks',
         perks: ['VOIP', 'MAP'],
       },
     ],
@@ -112,27 +144,47 @@ export const GAMES = {
       'Không giới hạn giờ chơi',
       'Bảo hành trong suốt gói thuê',
     ],
+    groups: [
+      { id: 'day', kicker: 'Gói thử nghiệm', label: '1 ngày', icon: '🧪' },
+      {
+        id: 'week',
+        kicker: 'Gói khuyến nghị',
+        label: '1 tuần',
+        icon: '⚔️',
+        badge: '🔥 Tiết kiệm',
+        featured: true,
+      },
+    ],
     plans: [
       {
         id: 'poe2-1d',
-        kicker: 'Gói thử nghiệm',
+        group: 'day',
+        variant: 'Thường',
         label: '1 ngày',
         icon: '🧪',
         hours: 24,
-        amount: 20000,
-        addonAmount: 15000,
-        note: 'Trải nghiệm không rủi ro',
+        amount: 15000,
+        note: 'Acc chuẩn, chơi mọi server',
+      },
+      {
+        id: 'poe2-1d-noban',
+        group: 'day',
+        variant: 'No-ban',
+        label: '1 ngày no-ban',
+        icon: '🛡️',
+        hours: 24,
+        amount: 25000,
+        note: 'Acc đã kiểm tra sạch ban',
       },
       {
         id: 'poe2-7d',
-        kicker: 'Gói khuyến nghị',
+        group: 'week',
+        variant: 'Thường',
         label: '1 tuần',
         icon: '⚔️',
         hours: 24 * 7,
         amount: 50000,
         note: 'Chỉ ~7k / ngày — rẻ hơn 65%',
-        badge: '🔥 Tiết kiệm',
-        featured: true,
       },
     ],
     purchase: {
@@ -194,7 +246,7 @@ export function gameFromSlug(slug) {
  * accounts nobody meant to restrict.
  */
 export const TAG_ONLY_PLANS = {
-  no_ban: ['isle-7d-voip'],
+  no_ban: ['isle-7d-voip', 'isle-1d-noban', 'poe2-1d-noban'],
 };
 
 /**
@@ -209,6 +261,11 @@ export const TAG_ONLY_PLANS = {
  */
 export const PLAN_REQUIRED_TAGS = {
   'isle-7d-voip': ['no_ban'],
+  // The whole product of the dearer day plan is the vetted account, so an untagged
+  // one must never fill it — a "no-ban" rental served from unvetted stock is the
+  // one thing that sells this plan and the one thing it cannot do.
+  'isle-1d-noban': ['no_ban'],
+  'poe2-1d-noban': ['no_ban'],
 };
 
 /** Tags without which this plan cannot be fulfilled at all. */
@@ -290,6 +347,10 @@ export function saleAllowed(internalNote) {
  */
 export const PLAN_UPGRADES = {
   'isle-1d': ['isle-7d', 'isle-7d-voip'],
+  // Only the VOIP week. The plain week is dearer than this plan, so it looks like an
+  // upgrade, but it would leave a vetted account running at the untagged price —
+  // the same thing the extension rule refuses. Up from vetted stock is vetted stock.
+  'isle-1d-noban': ['isle-7d-voip'],
   'isle-7d': ['isle-7d-voip'],
 };
 
@@ -313,6 +374,34 @@ export function upgradeAllowed(fromPlanId, toPlanId) {
  */
 export function accountMeetsPlanTags(internalNote, planId) {
   return tagsRequiredBy(planId).every((tag) => noteHasTag(internalNote, tag));
+}
+
+/**
+ * Why the allocator would NOT hand this account to this plan, or null if it would.
+ *
+ *   'missing_tag'      the plan requires a tag the account lacks — an ordinary
+ *                      account asked to serve the VOIP week or a no-ban day.
+ *   'reserved_account' the account carries a tag this plan is barred from — a
+ *                      vetted no_ban account asked to serve the plain 15k day.
+ *
+ * Both directions matter once a tag is what a customer is PAYING for. The second
+ * one used to be ignored everywhere except the allocator, on the reasoning that
+ * barring exists to stop a good account being spent on a cheap plan and is no
+ * reason to take one away from somebody who already holds it. That held while the
+ * only tagged plan was the VOIP week, where the premium bought perks. It stopped
+ * holding when the same day on a vetted account became 25k against 15k: the tag is
+ * now the product, so extending or adding onto that account at the plain price is
+ * simply the vetted account at the untagged price.
+ */
+export function planFitReason(internalNote, planId) {
+  if (!accountMeetsPlanTags(internalNote, planId)) return 'missing_tag';
+  const barred = tagsBarredFrom(planId).filter((tag) => noteHasTag(internalNote, tag));
+  return barred.length ? 'reserved_account' : null;
+}
+
+/** Whether the allocator would hand this account to this plan. */
+export function accountFitsPlan(internalNote, planId) {
+  return planFitReason(internalNote, planId) === null;
 }
 
 export const DEFAULT_GAME = 'the-isle';
@@ -340,6 +429,9 @@ export function findPlan(gameId, planId) {
  * work it out, and it never sends an amount.
  */
 export function addonAmount(plan) {
+  // No plan currently sets `addonAmount`, so every addon is sold at its shelf price
+  // and `full` comes back null — the strikethrough hides itself. The mechanism is
+  // kept because turning the offer back on is one field on one plan.
   const full = plan?.amount ?? 0;
   const price = plan?.addonAmount;
   if (typeof price !== 'number' || price >= full) return { amount: full, full: null };

@@ -15,7 +15,7 @@
  */
 
 import { decryptSecret, encryptSecret, sweepExpiredRentals } from './rentals.js';
-import { DEFAULT_GAME, GAMES } from '../data/rental-plans.js';
+import { DEFAULT_GAME, GAMES, saleAllowed } from '../data/rental-plans.js';
 import { pendingExpiryNotices, telegramConfigured } from './notify.js';
 import { REPORT_REASONS, URGENT_REASONS } from './reports.js';
 import { GAME_REQUEST_STATUSES } from './game-requests.js';
@@ -694,6 +694,10 @@ async function listAllOrders(env, actor, query) {
     // shown to the customer — see migrations/0015_order_refund_note.sql.
     note: o.note ?? null,
     accountLogin: o.account_login ?? null,
+    // The panel links the login to that account's detail view, which is addressed
+    // by id — the login alone would need a lookup, and is not unique once an
+    // account has been deleted and a new one added under the same name.
+    accountId: o.account_id ?? null,
     extendsOrder: o.extends_order ?? null,
     createdAt: o.created_at,
     paidAt: o.paid_at ?? null,
@@ -1408,6 +1412,69 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
     };
   }
 
+  /**
+   * What scripts/steam_change_password.py did, newest first.
+   *
+   * Every outcome it recorded, not only the successes: a SKIPPED row answers "why
+   * has this account not been rotated" and a LOGIN_FAILED row is usually the first
+   * sign of an account going bad, so hiding them would leave the panel showing a
+   * clean sweep on a day nothing worked. `?problems=1` narrows to exactly those.
+   *
+   * Scoped through the account's group like every other listing. A row whose account
+   * has since been deleted keeps its login (the log outlives the account row) and is
+   * owner-only, because there is no group left to check it against.
+   */
+  if (path === '/api/admin/rotations' && method === 'GET') {
+    const where = scope(actor, 'a.group_id');
+    const problemsOnly = query?.problems === '1';
+    // Free text by design (the script grows new outcomes), so "did it work" is a
+    // prefix test rather than a list this file would have to be kept in step with.
+    const problemFilter = problemsOnly ? " AND r.status NOT LIKE 'OK%'" : '';
+    const account = Number(query?.account);
+    const accountFilter = Number.isFinite(account) && account > 0 ? ' AND r.account_id = ?' : '';
+    const accountBinds = accountFilter ? [account] : [];
+    const rows = await env.DB.prepare(
+      `SELECT r.id, r.account_id, r.login, r.mode, r.status, r.detail, r.host, r.created_at,
+              a.status AS account_status, g.name AS group_name
+         FROM password_rotations r
+         LEFT JOIN steam_accounts a ON a.id = r.account_id
+         LEFT JOIN account_groups g ON g.id = a.group_id
+        WHERE 1 = 1${where.sql}${problemFilter}${accountFilter}
+        ORDER BY r.created_at DESC
+        LIMIT 100`
+    )
+      .bind(...where.binds, ...accountBinds)
+      .all();
+
+    return {
+      status: 200,
+      body: {
+        rotations: (rows?.results ?? []).map((r) => ({
+          id: r.id,
+          accountId: r.account_id ?? null,
+          login: r.login,
+          mode: r.mode,
+          status: r.status,
+          // "Did it work" is the one thing the page must not get wrong, so it is
+          // decided here rather than by the page re-deriving it from the string.
+          ok: String(r.status).startsWith('OK'),
+          skipped: String(r.status).startsWith('SKIPPED'),
+          // An OK with something appended is a rotation that happened AND left
+          // something needing attention — the renter holding a stale password
+          // (OK_STILL_RENTED), the DB write that did not land (OK_DB_UPDATE_FAILED).
+          // Green would be a lie on those rows, which is the whole reason to
+          // distinguish them here rather than lumping them in with a clean OK.
+          warn: String(r.status).startsWith('OK') && r.status !== 'OK',
+          detail: r.detail ?? null,
+          host: r.host ?? null,
+          createdAt: r.created_at,
+          accountStatus: r.account_status ?? null,
+          groupName: r.group_name ?? null,
+        })),
+      },
+    };
+  }
+
   if (path === '/api/admin/reports/resolve' && method === 'POST') {
     const id = Number(body?.id);
     if (!Number.isFinite(id)) return bad('unknown_report', 404);
@@ -1514,6 +1581,139 @@ export async function handleAdminRequest(env, { path, method, body, user, query 
   if (path === '/api/admin/game-requests/reply' && method === 'POST') {
     if (!isOwner(actor)) return bad('forbidden', 403);
     return replyToGameRequests(env, body);
+  }
+
+  /**
+   * Everything about ONE account, for the panel's detail view.
+   *
+   * Assembled server-side in one call rather than left to the page to stitch from
+   * four listings: the page holds a page of accounts and a page of orders, so an
+   * account's own history is mostly not in front of it, and the questions this view
+   * answers — who has had this login, what has gone wrong on it, when its password
+   * last moved — are each a different table.
+   *
+   * No secrets. The password and mailbox password stay behind the explicit reveal
+   * endpoint, which is a separate, deliberate click; this is the file card.
+   */
+  const accountDetail = /^\/api\/admin\/accounts\/(\d+)$/.exec(path);
+  if (accountDetail && method === 'GET') {
+    const id = Number(accountDetail[1]);
+    const where = scope(actor, 'a.group_id');
+    const account = await env.DB.prepare(
+      `SELECT ${ACCOUNT_COLUMNS}, a.password_changed_at ${ACCOUNT_FROM}
+        WHERE a.id = ?${where.sql}`
+    )
+      .bind(id, ...where.binds)
+      .first();
+    // 404 rather than 403 for a row outside the manager's groups: telling them it
+    // exists is already telling them something about stock that is not theirs.
+    if (!account) return bad('unknown_account', 404);
+
+    const orders = await env.DB.prepare(
+      `SELECT order_code, user_key, user_email, game, plan_id, hours, amount, status,
+              created_at, paid_at, expires_at, extends_order, upgrades_order, addon_of, note
+         FROM orders WHERE account_id = ? ORDER BY created_at DESC LIMIT 20`
+    )
+      .bind(id)
+      .all();
+
+    const reports = await env.DB.prepare(
+      `SELECT id, order_code, reason, message, status, created_at, resolved_at, resolution,
+              user_email, user_key
+         FROM account_reports WHERE account_id = ? ORDER BY created_at DESC LIMIT 10`
+    )
+      .bind(id)
+      .all();
+
+    const rotations = await env.DB.prepare(
+      `SELECT id, mode, status, detail, host, created_at
+         FROM password_rotations WHERE account_id = ? ORDER BY created_at DESC LIMIT 10`
+    )
+      .bind(id)
+      .all();
+
+    const games = account.games ? String(account.games).split(',').filter(Boolean) : [];
+    return {
+      status: 200,
+      body: {
+        account: {
+          id: account.id,
+          login: account.login,
+          email: account.email ?? null,
+          status: account.status,
+          banState: account.ban_state ?? null,
+          note: account.note ?? null,
+          internalNote: account.internal_note ?? null,
+          reservedFor: account.reserved_for ?? null,
+          hasEmailPassword: Boolean(account.has_email_password),
+          groupId: account.group_id ?? null,
+          groupName: account.group_name ?? null,
+          games,
+          // What the tags in internal_note actually mean for this account, decided
+          // here so the panel does not re-implement the tag grammar.
+          saleAllowed: saleAllowed(account.internal_note),
+          createdAt: account.created_at,
+          passwordChangedAt: account.password_changed_at ?? null,
+          rental: account.rented_order
+            ? {
+                orderCode: account.rented_order,
+                userKey: account.rented_by,
+                userEmail: account.rented_email ?? null,
+                expiresAt: account.rented_until ?? null,
+              }
+            : null,
+        },
+        orders: (orders?.results ?? []).map((o) => ({
+          orderCode: o.order_code,
+          userEmail: o.user_email ?? null,
+          userKey: o.user_key,
+          game: o.game,
+          planId: o.plan_id,
+          hours: o.hours,
+          amount: o.amount,
+          status: o.status,
+          note: o.note ?? null,
+          createdAt: o.created_at,
+          paidAt: o.paid_at ?? null,
+          expiresAt: o.expires_at ?? null,
+          extendsOrder: o.extends_order ?? null,
+          upgradesOrder: o.upgrades_order ?? null,
+          addonOf: o.addon_of ?? null,
+        })),
+        reports: (reports?.results ?? []).map((r) => ({
+          id: r.id,
+          orderCode: r.order_code,
+          reason: r.reason,
+          reasonLabel: REPORT_REASONS[r.reason] || r.reason,
+          message: r.message ?? null,
+          status: r.status,
+          createdAt: r.created_at,
+          resolvedAt: r.resolved_at ?? null,
+          resolution: r.resolution ?? null,
+          userEmail: r.user_email ?? null,
+          userKey: r.user_key,
+        })),
+        rotations: (rotations?.results ?? []).map((r) => ({
+          id: r.id,
+          mode: r.mode,
+          status: r.status,
+          ok: String(r.status).startsWith('OK'),
+          skipped: String(r.status).startsWith('SKIPPED'),
+          warn: String(r.status).startsWith('OK') && r.status !== 'OK',
+          detail: r.detail ?? null,
+          host: r.host ?? null,
+          createdAt: r.created_at,
+        })),
+        // What this login has earned, over every order ever placed on it — the one
+        // figure that says whether an account has paid for itself.
+        totals: (await env.DB.prepare(
+          `SELECT COUNT(*) AS orders, COALESCE(SUM(amount), 0) AS revenue
+             FROM orders WHERE account_id = ? AND paid_at IS NOT NULL${revenueStatusSql()}`
+        )
+          .bind(id)
+          .first()) ?? { orders: 0, revenue: 0 },
+      },
+    };
   }
 
   if (path === '/api/admin/accounts/games' && method === 'POST') {

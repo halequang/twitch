@@ -140,6 +140,8 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       <button type="submit" class="btn">Thêm vào kho</button>
     </form>
 
+    <h2 class="head spaced" id="ordersSection">Đơn hàng</h2>
+
     <div class="listbar">
       <input type="search" id="accountsQ" class="listbar-q"
              placeholder="Tìm theo tên tài khoản hoặc email…" />
@@ -174,7 +176,6 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       </table>
     </div>
 
-    <h2 class="head spaced" id="ordersSection">Đơn hàng</h2>
     <div class="listbar">
       <input type="search" id="ordersQ" class="listbar-q"
              placeholder="Tìm theo mã đơn, email khách hoặc tên tài khoản…" />
@@ -249,6 +250,42 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
         </table>
       </div>
     </section>
+
+    <!-- What the rotation script did. Below the inventory because it is about the
+         inventory, and above the owner-only group admin because a manager needs it
+         for their own accounts too. -->
+    <section id="rotationsWrap" class="card reports" hidden>
+      <div class="soon-head">
+        <h2 class="head" style="margin:0">🔑 Nhật ký đổi mật khẩu</h2>
+        <label class="soon-window">
+          <input type="checkbox" id="rotationsProblems" /> Chỉ hiện lỗi &amp; bỏ qua
+        </label>
+      </div>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Lúc</th><th>Tài khoản</th><th>Nhóm</th><th>Việc</th>
+              <th>Kết quả</th><th>Chi tiết</th><th>Máy chạy</th>
+            </tr>
+          </thead>
+          <tbody id="rotationsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- One account's file card, opened from any login shown in a table. A dialog
+         rather than a route: the panel is one page of tables, and looking a login up
+         is a detour from whatever the operator was reading, not a place to land. -->
+    <div id="acctModal" class="modal" hidden>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="acctModalTitle">
+        <div class="modal-head">
+          <h2 class="head" id="acctModalTitle" style="margin:0">Tài khoản</h2>
+          <button type="button" class="mini" id="acctModalClose">Đóng</button>
+        </div>
+        <div class="modal-body" id="acctModalBody"></div>
+      </div>
+    </div>
 
     <section id="ownerOnly" hidden>
       <h2 class="head">Nhóm tài khoản</h2>
@@ -884,6 +921,96 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
   .tbl :global(.pill.refunded)      { background: #ede9fe; color: #5b32b8; }
   .tbl :global(.pill.error)     { background: var(--ad-red-soft); color: var(--ad-red); }
 
+  /* ─── account detail dialog ─────────────────── */
+  .modal {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 40px 16px;
+    background: rgba(15, 23, 35, 0.55);
+    overflow-y: auto;
+  }
+
+  .modal[hidden] { display: none; }
+
+  .modal-card {
+    width: min(880px, 100%);
+    background: var(--ad-surface);
+    border: 1px solid var(--ad-line);
+    border-radius: 10px;
+    box-shadow: 0 18px 48px rgba(15, 23, 35, 0.28);
+  }
+
+  .modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--ad-line);
+  }
+
+  .modal-body { padding: 18px 20px 22px; }
+
+  /* The facts, two per row on a wide dialog and one per row on a phone. */
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px 20px;
+    margin-bottom: 18px;
+  }
+
+  .fact-key {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ad-text-mute);
+  }
+
+  .fact-val { font-size: 13px; color: var(--ad-text); word-break: break-word; }
+
+  .modal-section-title {
+    margin: 18px 0 8px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ad-text-mute);
+  }
+
+  /* A login that opens the dialog. Styled as a link so it reads as one. */
+  .acct-link {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    color: var(--ad-accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+
+  .acct-link:hover { color: var(--ad-text); }
+
+  /* Rotation outcomes. Three states rather than one per status string: it worked,
+     it was deliberately not done, or it failed — which is what the eye is scanning
+     this table for. The exact status is the pill's own text. */
+  .tbl :global(.pill.rot-ok)   { background: var(--ad-green-soft); color: var(--ad-green); }
+  .tbl :global(.pill.rot-skip) { background: var(--ad-line-soft); color: var(--ad-text-mute); }
+  .tbl :global(.pill.rot-warn) { background: var(--ad-amber-soft); color: var(--ad-amber); }
+  .tbl :global(.pill.rot-fail) { background: var(--ad-red-soft); color: var(--ad-red); }
+
+  .tbl :global(.rot-detail) {
+    max-width: 380px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--ad-text-mute);
+  }
+
   /* ─── buttons ──────────────────────────────── */
   .btn {
     display: inline-block;
@@ -1183,7 +1310,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       cell(tr, `${o.planId} (${o.hours}h)` + (o.extendsOrder ? ` · gia hạn #${o.extendsOrder}` : ''));
       cell(tr, fmtVnd(o.amount));
       cell(tr, pill(o.status, o.status));
-      cell(tr, o.accountLogin || '—');
+      cell(tr, accountLink(o.accountLogin, o.accountId));
       cell(tr, fmtTime(o.createdAt));
       cell(tr, fmtTime(o.expiresAt));
 
@@ -1647,6 +1774,253 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
     }
   }
 
+  /**
+   * The rotation script's own log, newest first.
+   *
+   * Shown even when it is all successes: "the sweep ran and did nothing" and "the
+   * sweep never ran" look identical on this page otherwise, and the second one is a
+   * problem. Every figure comes from the server — `ok` / `skipped` are decided there
+   * so the page is not re-deriving meaning from a status string.
+   */
+  function renderRotations(rotations) {
+    const wrap = el('rotationsWrap');
+    const body = el('rotationsBody');
+    if (!wrap || !body) return;
+    body.textContent = '';
+    wrap.hidden = false;
+
+    if (!rotations.length) {
+      const tr = document.createElement('tr');
+      const td = cell(tr, el('rotationsProblems')?.checked
+        ? 'Không có lần đổi mật khẩu nào lỗi hoặc bị bỏ qua.'
+        : 'Chưa có lần đổi mật khẩu nào được ghi lại.');
+      td.colSpan = 7;
+      td.className = 'muted';
+      body.appendChild(tr);
+      return;
+    }
+
+    for (const r of rotations) {
+      const tr = document.createElement('tr');
+      cell(tr, fmtTime(r.createdAt));
+
+      const login = document.createElement('code');
+      login.textContent = r.login;
+      // An account deleted since keeps its row in the log; say so rather than
+      // leaving a login that no longer resolves to anything.
+      const holder = document.createElement('div');
+      holder.appendChild(login);
+      if (r.accountId == null) {
+        const gone = document.createElement('div');
+        gone.className = 'muted';
+        gone.textContent = 'acc đã xoá';
+        holder.appendChild(gone);
+      }
+      cell(tr, holder);
+
+      cell(tr, r.groupName || '—');
+      cell(tr, r.mode === 'email' ? 'Đổi email' : 'Đổi mật khẩu');
+      cell(tr, pill(r.status,
+        r.warn ? 'rot-warn' : r.ok ? 'rot-ok' : r.skipped ? 'rot-skip' : 'rot-fail'));
+      cell(tr, r.detail || '—').className = 'rot-detail';
+      cell(tr, r.host || '—');
+      body.appendChild(tr);
+    }
+  }
+
+  /* ─── one account's file card ─────────────────
+     Opened from any login in a table. Everything in it comes from one call, because
+     the questions it answers live in four different tables and the page is holding
+     at most a page of each. */
+
+  /** A login rendered as a button that opens the dialog for it. */
+  function accountLink(login, accountId) {
+    if (!login) return '—';
+    // No id (an order whose account was deleted) leaves the login as plain text:
+    // a link that can only 404 is worse than no link.
+    if (accountId == null) {
+      const code = document.createElement('code');
+      code.textContent = login;
+      return code;
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'acct-link';
+    btn.textContent = login;
+    btn.title = 'Xem toàn bộ thông tin tài khoản';
+    btn.addEventListener('click', () => openAccount(accountId));
+    return btn;
+  }
+
+  function fact(key, value) {
+    const box = document.createElement('div');
+    const k = document.createElement('div');
+    k.className = 'fact-key';
+    k.textContent = key;
+    const v = document.createElement('div');
+    v.className = 'fact-val';
+    if (value instanceof Node) v.appendChild(value);
+    else v.textContent = value ?? '—';
+    box.append(k, v);
+    return box;
+  }
+
+  function modalSection(title) {
+    const h = document.createElement('p');
+    h.className = 'modal-section-title';
+    h.textContent = title;
+    return h;
+  }
+
+  /** A small table inside the dialog: [[header…], [[cell…]…]]. */
+  function modalTable(headers, rows, empty) {
+    if (!rows.length) {
+      const p = document.createElement('p');
+      p.className = 'muted';
+      p.textContent = empty;
+      return p;
+    }
+    const wrap = document.createElement('div');
+    wrap.className = 'table-wrap';
+    const table = document.createElement('table');
+    table.className = 'tbl';
+    const thead = document.createElement('thead');
+    const htr = document.createElement('tr');
+    for (const h of headers) {
+      const th = document.createElement('th');
+      th.textContent = h;
+      htr.appendChild(th);
+    }
+    thead.appendChild(htr);
+    const tbody = document.createElement('tbody');
+    for (const row of rows) {
+      const tr = document.createElement('tr');
+      for (const value of row) cell(tr, value);
+      tbody.appendChild(tr);
+    }
+    table.append(thead, tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  function closeAccountModal() {
+    el('acctModal').hidden = true;
+  }
+
+  async function openAccount(accountId) {
+    const modal = el('acctModal');
+    const body = el('acctModalBody');
+    body.textContent = '';
+    el('acctModalTitle').textContent = 'Tài khoản #' + accountId;
+    const loading = document.createElement('p');
+    loading.className = 'muted';
+    loading.textContent = 'Đang tải…';
+    body.appendChild(loading);
+    modal.hidden = false;
+
+    let data;
+    try {
+      data = await api('accounts/' + accountId);
+    } catch (err) {
+      loading.textContent = err.message === 'unknown_account'
+        ? 'Không tìm thấy tài khoản này (hoặc không thuộc nhóm của bạn).'
+        : 'Không tải được thông tin: ' + err.message;
+      return;
+    }
+
+    const a = data.account;
+    body.textContent = '';
+    el('acctModalTitle').textContent = a.login;
+
+    const facts = document.createElement('div');
+    facts.className = 'facts';
+    facts.append(
+      fact('ID', String(a.id)),
+      fact('Trạng thái', pill(a.status, a.status)),
+      fact('Nhóm', a.groupName || '— chưa phân nhóm —'),
+      fact('Email', a.email),
+      fact('Mật khẩu mail', a.hasEmailPassword ? 'đã lưu' : 'chưa lưu'),
+      fact('Game', a.games.length ? a.games.join(', ') : '—'),
+      fact('Ghi chú khách thấy', a.note),
+      fact('Ghi chú nội bộ', a.internalNote),
+      fact('Bán được', a.saleAllowed ? 'có (no_ban)' : 'không'),
+      fact('Giữ cho', a.reservedFor),
+      fact('Ban state', a.banState),
+      fact('Tạo lúc', fmtTime(a.createdAt)),
+      fact('Đổi mật khẩu lần cuối', a.passwordChangedAt ? fmtTime(a.passwordChangedAt) : 'chưa bao giờ'),
+      fact('Đang thuê', a.rental
+        ? `${a.rental.userEmail || a.rental.userKey} · đến ${fmtTime(a.rental.expiresAt)} (đơn #${a.rental.orderCode})`
+        : '— đang trống —'),
+      fact('Đã thu', `${fmtVnd(data.totals.revenue)} · ${data.totals.orders} đơn đã trả tiền`)
+    );
+    body.appendChild(facts);
+
+    body.appendChild(modalSection('Lịch sử đơn'));
+    body.appendChild(modalTable(
+      ['Mã đơn', 'Khách', 'Gói', 'Tiền', 'Trạng thái', 'Tạo', 'Hết hạn'],
+      data.orders.map((o) => [
+        String(o.orderCode),
+        o.userEmail || o.userKey,
+        `${o.planId} (${o.hours}h)`
+          + (o.extendsOrder ? ` · gia hạn #${o.extendsOrder}` : '')
+          + (o.upgradesOrder ? ` · nâng cấp #${o.upgradesOrder}` : '')
+          + (o.addonOf ? ` · thêm game #${o.addonOf}` : ''),
+        fmtVnd(o.amount),
+        pill(o.status, o.status),
+        fmtTime(o.createdAt),
+        fmtTime(o.expiresAt),
+      ]),
+      'Chưa có đơn nào trên acc này.'
+    ));
+
+    body.appendChild(modalSection('Khách báo lỗi'));
+    body.appendChild(modalTable(
+      ['Lúc', 'Lý do', 'Nội dung', 'Khách', 'Trạng thái'],
+      data.reports.map((r) => [
+        fmtTime(r.createdAt),
+        r.reasonLabel,
+        r.message || '—',
+        r.userEmail || r.userKey,
+        pill(r.status, r.status),
+      ]),
+      'Chưa có báo lỗi nào.'
+    ));
+
+    body.appendChild(modalSection('Nhật ký đổi mật khẩu'));
+    body.appendChild(modalTable(
+      ['Lúc', 'Việc', 'Kết quả', 'Chi tiết', 'Máy chạy'],
+      data.rotations.map((r) => [
+        fmtTime(r.createdAt),
+        r.mode === 'email' ? 'Đổi email' : 'Đổi mật khẩu',
+        pill(r.status, r.warn ? 'rot-warn' : r.ok ? 'rot-ok' : r.skipped ? 'rot-skip' : 'rot-fail'),
+        r.detail || '—',
+        r.host || '—',
+      ]),
+      'Chưa ghi nhận lần đổi mật khẩu nào.'
+    ));
+  }
+
+  el('acctModalClose')?.addEventListener('click', closeAccountModal);
+  // Backdrop and Esc both close it: a dialog opened by accident on a table row must
+  // be as cheap to leave as it was to open.
+  el('acctModal')?.addEventListener('click', (e) => {
+    if (e.target === el('acctModal')) closeAccountModal();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !el('acctModal').hidden) closeAccountModal();
+  });
+
+  async function loadRotations() {
+    try {
+      const data = await api('rotations' + (el('rotationsProblems')?.checked ? '?problems=1' : ''));
+      renderRotations(data.rotations || []);
+    } catch {
+      // The log is a record of past work, not live state: a failure to read it must
+      // not look like a failure of the rotation itself.
+      el('rotationsWrap').hidden = true;
+    }
+  }
+
   async function loadReports() {
     try {
       const all = el('reportsAll')?.checked ? '?all=1' : '';
@@ -1786,6 +2160,7 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
   wireFilters('orders', [['ordersStatus', 'status']]);
 
   el('reportsAll')?.addEventListener('change', loadReports);
+  el('rotationsProblems')?.addEventListener('change', loadRotations);
 
   function renderReport(r) {
     el('reportTotals').textContent =
@@ -2279,7 +2654,8 @@ const games = Object.entries(GAMES).map(([id, g]) => ({ id, name: g.name }));
       // Through the paged loaders, so the pagers reflect the current page and query
       // rather than being blank until the first interaction.
       await Promise.all([loadAccountsPage(), loadOrdersPage()]);
-      await Promise.all([loadExpiring(), loadReports(), loadReport(), loadGameRequests()]);
+      await Promise.all([loadExpiring(), loadReports(), loadReport(), loadGameRequests(),
+                         loadRotations()]);
       if (IS_OWNER) {
         try {
           renderManagers((await api('managers')).managers);

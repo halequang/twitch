@@ -184,6 +184,7 @@ import re
 import string
 import atexit
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -1299,6 +1300,39 @@ def held_since_rotation(db_id, remote):
     when = datetime.fromtimestamp(int(changed)).strftime("%Y-%m-%d %H:%M")
     return (f"password last changed {when} and nobody has been given it since "
             f"(no paid rental after that)")
+
+
+def _sql_text(value, limit=400):
+    """A TEXT literal for a value that came from Steam, an exception or a mailbox.
+
+    Everything here is inlined into SQL because D1 is reached through
+    `wrangler d1 execute --command`, which takes a statement and no bind list. So the
+    quoting is done properly rather than hopefully: single quotes doubled (SQL's own
+    escape), and the control characters a traceback brings with it stripped, since a
+    newline inside the command would split it into two statements.
+    """
+    text = "" if value is None else str(value)
+    text = " ".join(text.split())[:limit]
+    return "'" + text.replace("'", "''") + "'"
+
+
+def log_rotation(db_id, login, mode, status, detail, remote):
+    """Append one outcome to password_rotations (migrations/0018).
+
+    Deliberately NOT the passwords: this table is read by the admin panel, and the
+    live password already lives encrypted in steam_accounts. What is logged is what
+    happened and why — including the skips, which are the answer to "why has this
+    account not been rotated" and are invisible if only successes are kept.
+    """
+    host = _sql_text(socket.gethostname(), 60)
+    account = int(db_id) if db_id is not None else "NULL"
+    _d1(
+        "INSERT INTO password_rotations "
+        "(account_id, login, mode, status, detail, host, created_at) VALUES ("
+        f"{account}, {_sql_text(login, 80)}, {_sql_text(mode, 20)}, "
+        f"{_sql_text(status, 40)}, {_sql_text(detail)}, {host}, {int(time.time())})",
+        remote,
+    )
 
 
 def rental_restarted(db_id, remote):
@@ -2477,10 +2511,26 @@ def main():
 
     chrome_path = _get_chrome_path()
 
-    def record(steam_user, email, old_pass, new_pass, status):
+    def record(steam_user, email, old_pass, new_pass, status, db_id=None, detail=""):
+        """One outcome, written to the result file AND (in --db mode) to the database.
+
+        Two destinations because they answer different questions. The file keeps the
+        passwords, which is what a half-failed rotation has to be recovered from, and
+        it stays local. The database keeps what happened — no passwords — so the
+        other copy of this script and the admin panel can both see it.
+
+        The DB write is best-effort on purpose: losing a log line must never turn a
+        completed rotation into a failure, and the file line has already landed.
+        """
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(result_file, "a", encoding="utf-8") as f:
             f.write(f"{steam_user}|{email}|{old_pass}|{new_pass}|{status}|{ts}\n")
+        if not use_db:
+            return
+        try:
+            log_rotation(db_id, steam_user, mode, status, detail, remote)
+        except Exception as e:
+            print(f"  [{steam_user}] rotation log not written: {str(e).splitlines()[0][:120]}")
 
     for n, acc in enumerate(todo, start=1):
         user = acc["steam_user"]
@@ -2514,13 +2564,16 @@ def main():
                     print(f"  ⏭️  [{user}] SKIPPED — password changed less than "
                           f"{MIN_ROTATION_INTERVAL_HOURS}h ago; rotatable again in "
                           f"{format_wait(left)} (pass --force-interval to override).")
-                    record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_TOO_RECENT")
+                    record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_TOO_RECENT",
+                           acc.get("db_id"),
+                           f"rotatable again in {format_wait(left)}")
                     continue
             except Exception as e:
                 # Cannot prove it was not just rotated, so do not gamble a second
                 # Guard email and a password nobody has recorded.
                 print(f"  ⏭️  [{user}] SKIPPED — rotation-interval re-check failed ({e}).")
-                record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_TOO_RECENT")
+                record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_TOO_RECENT",
+                       acc.get("db_id"), f"interval re-check failed ({e})")
                 continue
         elif not force_interval and not use_db:
             left = rotated_recently_in_file(result_file, user)
@@ -2528,7 +2581,8 @@ def main():
                 print(f"  ⏭️  [{user}] SKIPPED — password changed less than "
                       f"{MIN_ROTATION_INTERVAL_HOURS}h ago; rotatable again in "
                       f"{format_wait(left)} (pass --force-interval to override).")
-                record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_TOO_RECENT")
+                record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_TOO_RECENT",
+                       acc.get("db_id"), f"rotatable again in {format_wait(left)}")
                 continue
 
         # Nothing has happened to this account since it was last rotated, so the
@@ -2547,7 +2601,8 @@ def main():
             if idle:
                 print(f"  ⏭️  [{user}] SKIPPED — {idle}. Nothing to rotate "
                       f"(pass --force to rotate anyway).")
-                record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_NOT_RENTED")
+                record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_NOT_RENTED",
+                       acc.get("db_id"), idle)
                 continue
 
         # Re-check the pool before touching Steam — for EVERY account, --account
@@ -2565,7 +2620,8 @@ def main():
             if blocked:
                 print(f"  ⏭️  [{user}] SKIPPED — {blocked}. The password stays as it "
                       f"is (pass --allow-rented to rotate anyway).")
-                record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_RERENTED")
+                record(user, acc["email"], acc["steam_pass"], "", "SKIPPED_RERENTED",
+                       acc.get("db_id"), blocked)
                 continue
 
         # Anything still alive belongs to the PREVIOUS account: only --keep-open
@@ -2583,7 +2639,8 @@ def main():
         try:
             driver = create_driver(chrome_path)
             if not steam_login(driver, acc):
-                record(user, acc["email"], acc["steam_pass"], "", "LOGIN_FAILED")
+                record(user, acc["email"], acc["steam_pass"], "", "LOGIN_FAILED",
+                       acc.get("db_id"))
                 print(f"  ❌ [{user}] LOGIN_FAILED")
                 continue
             if mode == "email":
@@ -2614,7 +2671,8 @@ def main():
                         status = "OK_DB_UPDATE_FAILED"
                 # The password is untouched in this mode, so record the existing one
                 # rather than a generated one that was never set.
-                record(user, new_email, acc["steam_pass"], "", status)
+                record(user, new_email, acc["steam_pass"], "", status,
+                       acc.get("db_id"), f"new address {new_email}")
                 icon = "✅" if status.startswith("OK") else "⚠️"
                 print(f"  {icon} [{user}] {status}")
                 continue
@@ -2653,12 +2711,14 @@ def main():
                           f"{' --remote' if remote else ''} --repair-db")
                     status = "OK_DB_UPDATE_FAILED"
             recorded_new = new_pass if status.startswith("OK") else ""
-            record(user, acc["email"], acc["steam_pass"], recorded_new, status)
+            record(user, acc["email"], acc["steam_pass"], recorded_new, status,
+                   acc.get("db_id"))
             icon = "✅" if status.startswith("OK") else "⚠️"
             print(f"  {icon} [{user}] {status}")
         except Exception as e:
             print(f"  [{user}] error: {e}")
-            record(user, acc["email"], acc["steam_pass"], "", "ERROR")
+            record(user, acc["email"], acc["steam_pass"], "", "ERROR",
+                   acc.get("db_id"), str(e).splitlines()[0][:200])
         finally:
             if not keep_open:
                 # Both browsers, unconditionally: Steam's and the mailbox's.

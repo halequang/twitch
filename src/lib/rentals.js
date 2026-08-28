@@ -19,6 +19,8 @@ import {
   GAMES,
   TAG_SEPARATORS,
   accountMeetsPlanTags,
+  accountFitsPlan,
+  planFitReason,
   findPlan,
   addonAmount,
   gameOfPlan,
@@ -292,8 +294,8 @@ async function countStock(db, game, forEmail, planId) {
  */
 async function claimAccount(db, game, forEmail = null, planId = null) {
   // Tags EXCLUDE as well as prefer: an account tagged for another plan is filtered
-  // out entirely, which is what stops a 20k day rental being handed a no_ban
-  // account held back for the 80k VOIP week.
+  // out entirely, which is what stops a 15k day rental being handed a no_ban
+  // account held back for the 25k no-ban day or the 80k VOIP week.
   //
   // Pick order, most specific first:
   //   1. reserved for this customer — it was set aside for them by name
@@ -409,7 +411,7 @@ export async function listPlans(env, game = DEFAULT_GAME, forEmail = null) {
  * What moving a live rental onto a dearer plan costs, and how long it then runs.
  *
  * Money: the difference between the two shelf prices, and nothing else. A day
- * upgraded to a week costs 50k − 20k = 30k, so the customer ends up having paid
+ * upgraded to a week costs 50k − 15k = 35k, so the customer ends up having paid
  * exactly the week's price for a week — which is the only rule that is obvious on
  * the invoice and cannot be argued with. No credit for time already used, and no
  * proration: those are the same number here, because the time is measured from the
@@ -587,14 +589,35 @@ export async function createCheckout(
     }
 
     // An extension adds hours to the rental the customer already has, on the SAME
-    // login — so it can only ever be a plan that login can actually serve. The VOIP
-    // week requires a no_ban account (PLAN_REQUIRED_TAGS), so extending a 1-day or
-    // plain-week rental with it would sell perks the account cannot deliver: the
-    // hours would land, the VOIP would not.
+    // login — so it can only ever be a plan the allocator itself would have given
+    // that login, which is a test in both directions:
     //
-    // The way from those plans to the VOIP week is the UPGRADE, which swaps in a
-    // vetted account. Hence the error naming it rather than a flat refusal.
-    if (extendOrderCode != null && !accountMeetsPlanTags(held?.internal_note, plan.id)) {
+    //   too high — the VOIP week and the no-ban day require a no_ban account
+    //     (PLAN_REQUIRED_TAGS). Extending an ordinary rental with one sells what the
+    //     account cannot deliver: the hours land, the vetting does not. The way
+    //     there is the UPGRADE, which swaps in a vetted account, so the error names
+    //     it rather than flatly refusing.
+    //
+    //   too low — the plain day and plain week are barred from a vetted account. The
+    //     customer holds stock that sells for more, and extending at the untagged
+    //     price would keep it occupied at that price for as long as they like. They
+    //     are not refused more time, only more time at the wrong plan's price.
+    const extendFit = extendOrderCode != null ? planFitReason(held?.internal_note, plan.id) : null;
+    if (extendFit === 'reserved_account') {
+      return {
+        status: 409,
+        body: {
+          error: 'extend_below_account_tier',
+          plan: plan.id,
+          // What the customer is holding, so the page can name the plan that does
+          // fit instead of only saying no.
+          fits: (GAMES[parent.game]?.plans ?? [])
+            .filter((p) => accountFitsPlan(held?.internal_note, p.id))
+            .map((p) => ({ id: p.id, label: p.label, amount: p.amount })),
+        },
+      };
+    }
+    if (extendFit) {
       return {
         status: 409,
         body: {
@@ -662,9 +685,24 @@ export async function createCheckout(
       if (await activeOrderForGame(db, parent.account_id, targetGame)) {
         return { status: 409, body: { error: 'game_already_rented', game: targetGame } };
       }
-      // Same reasoning as the extension above: the plan runs on the login they
-      // already hold, so a plan with required tags that login lacks cannot be sold.
-      if (!accountMeetsPlanTags(held?.internal_note, plan.id)) {
+      // Same reasoning as the extension above, and the same rule: a second game runs
+      // on the login they already hold, so the plan has to be one that login would
+      // have been allocated to — a required tag it lacks is refused, and so is a
+      // plan barred from it, which on a vetted account is the plain price.
+      const addonFit = planFitReason(held?.internal_note, plan.id);
+      if (addonFit === 'reserved_account') {
+        return {
+          status: 409,
+          body: {
+            error: 'extend_below_account_tier',
+            plan: plan.id,
+            fits: (GAMES[targetGame]?.plans ?? [])
+              .filter((p) => accountFitsPlan(held?.internal_note, p.id))
+              .map((p) => ({ id: p.id, label: p.label, amount: p.amount })),
+          },
+        };
+      }
+      if (addonFit) {
         return {
           status: 409,
           body: { error: 'extend_needs_tagged_account', plan: plan.id, requires: tagsRequiredBy(plan.id), upgradable: false },
@@ -1354,7 +1392,9 @@ async function addonOffers(db, order, internalNote) {
       // Filtered, not flagged: a second-game plan the held login cannot serve has
       // no upgrade route to offer instead, so there is nothing useful to show.
       plans: catalogue.plans
-        .filter((p) => accountMeetsPlanTags(internalNote, p.id))
+        // The same fit rule as the checkout that follows: offering a plan the guard
+        // would refuse is a button that only ever produces an error.
+        .filter((p) => accountFitsPlan(internalNote, p.id))
         .map((p) => {
           // `amount` is what this plan costs HERE, discount already applied, because
           // that is the number the page shows on the button and the number the
@@ -1494,14 +1534,23 @@ export async function listOrders(env, user) {
           // on now, and whether a login has to change depends on the account they
           // happen to be holding.
           // Which of this game's plans the held login can actually serve. An
-          // extension runs on that same account, so a plan whose required tags it
-          // lacks — the VOIP week on an ordinary account — is not extendable, and
-          // the page disables that button instead of taking money for perks that
-          // would never arrive. `upgradable` says whether there is a legitimate
-          // route to it, which for 1 ngày and 1 tuần there is.
+          // extension runs on that same account, so the plans it can be extended
+          // with are the ones the allocator would have given that account — not the
+          // VOIP week or the no-ban day on an ordinary login (perks and vetting it
+          // cannot deliver), and not the plain day or week on a vetted one (that
+          // account at the untagged price, for as long as they keep renewing).
+          // The page disables those buttons rather than taking the money.
+          // `upgradable` says whether there is a legitimate route up to a blocked
+          // plan, which from 1 ngày and 1 tuần there is.
           entry.extendPlans = (GAMES[order.game]?.plans ?? []).map((p) => ({
             id: p.id,
-            allowed: accountMeetsPlanTags(account.internal_note, p.id),
+            allowed: accountFitsPlan(account.internal_note, p.id),
+            // Which way it does not fit: 'missing_tag' is a plan above this account
+            // (perks it cannot serve), 'reserved_account' is one below it (the
+            // vetted login at the plain price). The page says different things
+            // about them — one has an upgrade route, the other is just the wrong
+            // price for what they are holding.
+            reason: planFitReason(account.internal_note, p.id),
             requires: tagsRequiredBy(p.id),
             upgradable: upgradeAllowed(order.plan_id, p.id),
           }));
